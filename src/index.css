@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@theme {
+  /* Brand: "trustworthy guide" — calm indigo, confirmed green, delay-risk amber */
+  --color-brand-50: #eef1fc;
+  --color-brand-100: #d6ddf7;
+  --color-brand-200: #aebbef;
+  --color-brand-300: #8295e2;
+  --color-brand-400: #5b6fd0;
+  --color-brand-500: #3d4fb8;
+  --color-brand-600: #2e3c97;
+  --color-brand-700: #263078;
+  --color-brand-800: #1f2860;
+  --color-brand-900: #161c45;
+
+  --color-safe-50: #ecfdf3;
+  --color-safe-100: #d3f8e1;
+  --color-safe-500: #15a36e;
+  --color-safe-600: #0f8459;
+
+  --color-caution-50: #fff8eb;
+  --color-caution-100: #ffecc4;
+  --color-caution-500: #d98c12;
+  --color-caution-600: #b3700a;
+
+  --color-risk-50: #fef2f2;
+  --color-risk-500: #dc4747;
+  --color-risk-600: #b83434;
+
+  --font-sans: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Manrope', 'Inter', system-ui, sans-serif;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: #f7f8fc;
+  color: #161c45;
+}
+
+#root {
+  min-height: 100svh;
+}
