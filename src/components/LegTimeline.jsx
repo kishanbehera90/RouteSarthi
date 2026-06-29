@@ -1,7 +1,25 @@
+import { motion } from 'motion/react'
 import { ShieldCheck, ShieldAlert } from 'lucide-react'
 import ModeIcon from './ModeIcon'
 import ConfirmationPill from './ConfirmationPill'
 import { formatFare } from '../lib/utils'
+
+function OnTimeBar({ pct }) {
+  const color =
+    pct >= 80 ? 'var(--color-safe-500)' : pct >= 60 ? 'var(--color-caution-500)' : 'var(--color-risk-500)'
+  return (
+    <div className="mt-1.5 h-1.5 w-full max-w-[200px] overflow-hidden rounded-full bg-brand-900/[0.07]">
+      <motion.div
+        className="h-full rounded-full"
+        style={{ backgroundColor: color }}
+        initial={{ width: 0 }}
+        whileInView={{ width: `${pct}%` }}
+        viewport={{ once: true }}
+        transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+      />
+    </div>
+  )
+}
 
 function ConnectionRow({ leg }) {
   const safe = leg.connectionSafetyPct >= 85
@@ -36,9 +54,12 @@ function LegRow({ leg }) {
           {leg.from} {leg.depart} → {leg.to} {leg.arrive}
         </p>
         {leg.delayProfile && (
-          <p className="mt-1 text-xs text-gray-400">
-            Historically {leg.delayProfile.onTimePct}% on time · avg delay {leg.delayProfile.avgMins} min
-          </p>
+          <div className="mt-1">
+            <p className="text-xs text-gray-400">
+              Historically {leg.delayProfile.onTimePct}% on time · avg delay {leg.delayProfile.avgMins} min
+            </p>
+            <OnTimeBar pct={leg.delayProfile.onTimePct} />
+          </div>
         )}
       </div>
       <p className="shrink-0 self-start text-sm font-semibold text-brand-900">

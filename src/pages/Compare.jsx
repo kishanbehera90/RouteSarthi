@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import ReliabilityBadge from '../components/ReliabilityBadge'
 import ConfirmationPill from '../components/ConfirmationPill'
+import EyebrowLabel from '../components/EyebrowLabel'
+import ArrowButton from '../components/ArrowButton'
+import BackLink from '../components/BackLink'
+import { CompareSkeleton } from '../components/Skeleton'
 import { formatDuration, formatFare } from '../lib/utils'
 
 export default function Compare() {
@@ -16,14 +20,16 @@ export default function Compare() {
       .then((data) => setRoutes(data.routes))
   }, [from, to])
 
-  if (!routes) return <p className="text-sm text-gray-400">Loading comparison…</p>
+  if (!routes) return <CompareSkeleton />
 
   const direct = routes.find((r) => r.type === 'direct')
   const best = routes.find((r) => r.type === 'cross-origin')
 
   return (
-    <div>
-      <h1 className="font-display text-xl font-bold text-brand-900">Direct vs. smarter route</h1>
+    <div className="mx-auto max-w-2xl">
+      <BackLink>Back to results</BackLink>
+      <EyebrowLabel>Compare</EyebrowLabel>
+      <h1 className="mt-3 font-display text-xl font-bold text-brand-900">Direct vs. smarter route</h1>
       <p className="mt-1 text-sm text-gray-500">
         Here's the honest comparison — see why the detour usually wins.
       </p>
@@ -35,7 +41,7 @@ export default function Compare() {
         ].map(({ label, route }) => (
           <div
             key={label}
-            className="rounded-2xl border border-brand-100 bg-white p-4"
+            className="rounded-2xl border border-brand-900/10 bg-white p-4"
           >
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">{label}</p>
             {route ? (
@@ -52,12 +58,9 @@ export default function Compare() {
                 <div className="mt-2">
                   <ReliabilityBadge score={route.reliability} />
                 </div>
-                <Link
-                  to={`/routes/${route.id}`}
-                  className="mt-4 block text-center text-xs font-semibold text-brand-600"
-                >
-                  View plan →
-                </Link>
+                <ArrowButton as={Link} to={`/routes/${route.id}`} variant="ghost" className="mt-4 text-xs">
+                  View plan
+                </ArrowButton>
               </>
             ) : (
               <p className="mt-2 text-sm text-gray-400">No option found.</p>

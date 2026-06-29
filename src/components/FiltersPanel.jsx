@@ -1,3 +1,4 @@
+import { Check } from 'lucide-react'
 import { useJourneyStore } from '../store/useJourneyStore'
 
 const items = [
@@ -6,9 +7,29 @@ const items = [
   { key: 'avoidLateNight', label: 'Avoid late-night arrivals' },
 ]
 
-export default function FiltersPanel() {
+export default function FiltersPanel({ vertical = false }) {
   const filters = useJourneyStore((s) => s.filters)
   const toggleFilter = useJourneyStore((s) => s.toggleFilter)
+
+  if (vertical) {
+    return (
+      <div className="flex flex-col gap-1">
+        {items.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => toggleFilter(item.key)}
+            className={`flex items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium transition ${
+              filters[item.key] ? 'bg-mist-50 text-mist-600' : 'text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            {item.label}
+            {filters[item.key] && <Check className="h-3.5 w-3.5" />}
+          </button>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-wrap gap-2">

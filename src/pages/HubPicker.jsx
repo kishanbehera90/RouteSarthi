@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { MapPinned, ArrowRight } from 'lucide-react'
+import { MapPinned } from 'lucide-react'
 import ModeIcon from '../components/ModeIcon'
+import EyebrowLabel from '../components/EyebrowLabel'
+import ArrowButton from '../components/ArrowButton'
+import BackLink from '../components/BackLink'
+import { HubPickerSkeleton } from '../components/Skeleton'
 import { formatDuration, formatFare } from '../lib/utils'
 
 export default function HubPicker() {
@@ -16,7 +20,7 @@ export default function HubPicker() {
       .then((data) => setRoutes(data.routes))
   }, [from, to])
 
-  if (!routes) return <p className="text-sm text-gray-400">Loading hubs…</p>
+  if (!routes) return <HubPickerSkeleton />
 
   const crossOrigin = routes.filter((r) => r.type === 'cross-origin')
   const byHub = new Map()
@@ -28,8 +32,10 @@ export default function HubPicker() {
   }
 
   return (
-    <div>
-      <h1 className="font-display text-xl font-bold text-brand-900">Pick your origin hub</h1>
+    <div className="mx-auto max-w-2xl">
+      <BackLink>Back to results</BackLink>
+      <EyebrowLabel>Choose a hub</EyebrowLabel>
+      <h1 className="mt-3 font-display text-xl font-bold text-brand-900">Pick your origin hub</h1>
       <p className="mt-1 text-sm text-gray-500">
         When a nearby city is much better connected, we route you there first. Here's the first-mile cost for each.
       </p>
@@ -39,9 +45,9 @@ export default function HubPicker() {
           const best = hubRoutes[0]
           const firstMile = best.legs[0]
           return (
-            <div key={hub.code} className="rounded-2xl border border-brand-100 bg-white p-4">
+            <div key={hub.code} className="rounded-2xl border border-brand-900/10 bg-white p-4">
               <div className="flex items-center gap-2">
-                <MapPinned className="h-4 w-4 text-brand-600" />
+                <MapPinned className="h-4 w-4 text-mist-500" />
                 <p className="font-semibold text-brand-900">{hub.name}</p>
               </div>
               <div className="mt-2 flex items-center gap-2 text-sm text-gray-500">
@@ -53,12 +59,9 @@ export default function HubPicker() {
               <p className="mt-2 text-xs text-gray-400">
                 {hubRoutes.length} confirmed route{hubRoutes.length > 1 ? 's' : ''} onward from here
               </p>
-              <Link
-                to={`/routes/${best.id}`}
-                className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-brand-600"
-              >
-                Plan via {hub.name} <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
+              <ArrowButton as={Link} to={`/routes/${best.id}`} variant="ghost" className="mt-3 text-sm">
+                Plan via {hub.name}
+              </ArrowButton>
             </div>
           )
         })}

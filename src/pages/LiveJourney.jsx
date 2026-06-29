@@ -2,6 +2,12 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { LifeBuoy, CheckCircle2, AlertTriangle, RefreshCcw } from 'lucide-react'
 import ModeIcon from '../components/ModeIcon'
+import EyebrowLabel from '../components/EyebrowLabel'
+import ArrowButton from '../components/ArrowButton'
+import BackLink from '../components/BackLink'
+import PhotoEmptyState from '../components/PhotoEmptyState'
+import { LiveJourneySkeleton } from '../components/Skeleton'
+import emptyLive from '../assets/empty-live.webp'
 import { formatDuration } from '../lib/utils'
 
 export default function LiveJourney() {
@@ -19,27 +25,29 @@ export default function LiveJourney() {
 
   if (!routeId) {
     return (
-      <div className="text-center">
-        <LifeBuoy className="mx-auto h-10 w-10 text-brand-300" />
-        <h1 className="mt-3 font-display text-lg font-bold text-brand-900">No active journey</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          Start a journey from any route's plan page — we'll monitor every leg here and step in if something breaks.
-        </p>
-        <Link to="/search" className="mt-4 inline-block text-sm font-semibold text-brand-600">
-          Plan a journey →
-        </Link>
-      </div>
+      <PhotoEmptyState
+        image={emptyLive}
+        icon={LifeBuoy}
+        title="No active journey"
+        text="Start a journey from any route's plan page — we'll monitor every leg here and step in if something breaks."
+      >
+        <ArrowButton as={Link} to="/search" variant="light">
+          Plan a journey
+        </ArrowButton>
+      </PhotoEmptyState>
     )
   }
 
-  if (!route) return <p className="text-sm text-gray-400">Loading journey…</p>
+  if (!route) return <LiveJourneySkeleton />
 
   const movingLegs = route.legs.filter((l) => l.mode !== 'connection')
   const fallback = movingLegs[movingLegs.length - 1]
 
   return (
-    <div>
-      <h1 className="font-display text-xl font-bold text-brand-900">Journey in progress</h1>
+    <div className="mx-auto max-w-2xl">
+      <BackLink to={`/routes/${routeId}`}>Back to route</BackLink>
+      <EyebrowLabel>Lifeline</EyebrowLabel>
+      <h1 className="mt-3 font-display text-xl font-bold text-brand-900">Journey in progress</h1>
       <p className="mt-1 text-sm text-gray-500">
         {route.type === 'cross-origin' ? `Via ${route.hub?.name}` : 'Direct'} · live monitoring active
       </p>
@@ -51,7 +59,7 @@ export default function LiveJourney() {
           return (
             <div
               key={leg.id}
-              className="flex items-center gap-3 rounded-xl border border-brand-100 bg-white p-3"
+              className="flex items-center gap-3 rounded-xl border border-brand-900/10 bg-white p-3"
             >
               <ModeIcon mode={leg.mode} className="h-4 w-4 text-brand-500" />
               <div className="flex-1">
@@ -75,7 +83,7 @@ export default function LiveJourney() {
       </div>
 
       {!rerouted ? (
-        <div className="mt-6 rounded-2xl border border-dashed border-brand-200 bg-white p-4 text-center">
+        <div className="mt-6 rounded-2xl border border-dashed border-brand-900/15 bg-white p-4 text-center">
           <p className="text-sm text-gray-500">
             Worried about a delay or a missed connection? Tap below and we'll re-plan the rest of your journey from your current location.
           </p>

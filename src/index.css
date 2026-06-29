@@ -27,8 +27,20 @@
   --color-risk-500: #dc4747;
   --color-risk-600: #b83434;
 
+  /* Decorative accent wash — kept distinct from the safe/caution/risk semantic colors */
+  --color-mist-50: #eef9f7;
+  --color-mist-100: #d4f0ea;
+  --color-mist-200: #ace0d5;
+  --color-mist-300: #7accbd;
+  --color-mist-400: #4bb3a0;
+  --color-mist-500: #2f9885;
+  --color-mist-600: #237a6b;
+
+  --color-sand-50: #fbfaf8;
+  --color-sand-100: #f3f0ea;
+
   --font-sans: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
-  --font-display: 'Manrope', 'Inter', system-ui, sans-serif;
+  --font-display: 'Poppins', 'Inter', system-ui, sans-serif;
 }
 
 html {
@@ -44,4 +56,37 @@ body {
 
 #root {
   min-height: 100svh;
+}
+
+/* Shimmer sheen for loading skeletons */
+@keyframes rs-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.rs-skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: rgba(22, 28, 69, 0.06);
+}
+
+.rs-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.65),
+    transparent
+  );
+  animation: rs-shimmer 1.5s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rs-skeleton::after {
+    animation: none;
+  }
 }
