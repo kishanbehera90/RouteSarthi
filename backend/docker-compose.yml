@@ -1,0 +1,31 @@
+# Local infra for the engine. Not needed for the Step-0 scaffold (which runs
+# on seed data), but ready for Step 1 onward (static data load, caching).
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: routesarthi
+      POSTGRES_PASSWORD: routesarthi
+      POSTGRES_DB: routesarthi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # Self-hosted road routing for first/last-mile legs. Build the India OSM
+  # extract per the README before first run.
+  # osrm:
+  #   image: osrm/osrm-backend
+  #   command: osrm-routed --algorithm mld /data/india-latest.osrm
+  #   ports:
+  #     - "5000:5000"
+  #   volumes:
+  #     - ./data/osrm:/data
+
+volumes:
+  pgdata:

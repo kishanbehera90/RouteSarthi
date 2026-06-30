@@ -5,20 +5,28 @@ import { getCityCoords } from '../data/cityGeo'
 
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/positron'
 
+// Prefer backend-supplied coords (real stations); fall back to the local
+// city lookup (mock data).
+function endpointCoords(leg, end) {
+  const c = end === 'from' ? leg.fromCoords : leg.toCoords
+  if (Array.isArray(c) && c.length === 2 && c[0] != null && c[1] != null) return c
+  return getCityCoords(end === 'from' ? leg.from : leg.to)
+}
+
 // Ordered list of node stops (origin → hubs → destination), de-duped.
 function buildStops(legs) {
-  const named = []
+  const pts = []
   for (const leg of legs) {
     if (leg.mode === 'connection') continue
-    named.push(leg.from, leg.to)
+    pts.push({ name: leg.from, coords: endpointCoords(leg, 'from') })
+    pts.push({ name: leg.to, coords: endpointCoords(leg, 'to') })
   }
   const stops = []
-  for (const name of named) {
-    const coords = getCityCoords(name)
-    if (!coords) continue
+  for (const p of pts) {
+    if (!p.coords) continue
     const last = stops[stops.length - 1]
-    if (last && last.coords[0] === coords[0] && last.coords[1] === coords[1]) continue
-    stops.push({ name, coords })
+    if (last && last.coords[0] === p.coords[0] && last.coords[1] === p.coords[1]) continue
+    stops.push(p)
   }
   return stops
 }
@@ -28,8 +36,8 @@ function buildSegments(legs) {
   const segs = []
   for (const leg of legs) {
     if (leg.mode === 'connection') continue
-    const from = getCityCoords(leg.from)
-    const to = getCityCoords(leg.to)
+    const from = endpointCoords(leg, 'from')
+    const to = endpointCoords(leg, 'to')
     if (!from || !to || (from[0] === to[0] && from[1] === to[1])) continue
     segs.push({ mode: leg.mode, mid: [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2] })
   }
