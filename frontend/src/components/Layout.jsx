@@ -2,6 +2,8 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import { Compass, Bookmark, LifeBuoy } from 'lucide-react'
 import AuthMenu from './AuthMenu'
+import Logo from './Logo'
+import ThemeToggle from './ThemeToggle'
 import { cn } from '../lib/utils'
 
 const navItems = [
@@ -14,12 +16,12 @@ export default function Layout() {
   const location = useLocation()
 
   return (
-    <div className="min-h-svh bg-sand-100">
-      <header className="sticky top-0 z-20 border-b border-brand-900/5 bg-white/90 backdrop-blur">
+    <div className="rs-app-bg min-h-svh">
+      <header className="sticky top-0 z-20 border-b border-line-soft bg-surface/70 backdrop-blur-xl supports-[backdrop-filter]:bg-surface/60">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3.5 sm:px-6 lg:px-8">
-          <NavLink to="/" className="flex items-baseline gap-2">
-            <span className="font-display text-lg font-bold text-brand-900">RouteSarthi</span>
-            <span className="hidden text-xs text-gray-400 lg:inline">Peace of mind, every time.</span>
+          <NavLink to="/" className="flex items-center gap-2.5">
+            <Logo size={26} />
+            <span className="hidden text-xs text-faint lg:inline">Peace of mind, every time.</span>
           </NavLink>
 
           <nav className="hidden items-center gap-6 sm:flex">
@@ -30,7 +32,7 @@ export default function Layout() {
                 className={({ isActive }) =>
                   cn(
                     'flex items-center gap-1.5 text-sm font-medium transition-colors',
-                    isActive ? 'text-brand-600' : 'text-gray-500 hover:text-brand-600'
+                    isActive ? 'text-brand-600' : 'text-muted hover:text-brand-600'
                   )
                 }
               >
@@ -40,7 +42,10 @@ export default function Layout() {
             ))}
           </nav>
 
-          <AuthMenu />
+          <div className="flex items-center gap-1.5">
+            <ThemeToggle />
+            <AuthMenu />
+          </div>
         </div>
       </header>
 
@@ -58,7 +63,7 @@ export default function Layout() {
         </AnimatePresence>
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-brand-900/5 bg-white px-4 py-2 sm:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-line-soft bg-surface/80 px-4 py-2 backdrop-blur-xl sm:hidden">
         <div className="flex justify-around">
           {navItems.map(({ to, label, icon: Icon }) => (
             <NavLink
@@ -67,7 +72,7 @@ export default function Layout() {
               className={({ isActive }) =>
                 cn(
                   'flex flex-col items-center gap-0.5 rounded-lg px-4 py-1.5 text-xs font-medium transition-colors',
-                  isActive ? 'text-brand-600' : 'text-gray-400 hover:text-brand-400'
+                  isActive ? 'text-brand-600' : 'text-faint hover:text-brand-400'
                 )
               }
             >

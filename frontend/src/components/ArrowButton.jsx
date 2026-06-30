@@ -2,10 +2,10 @@ import { ArrowRight } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 const variants = {
-  solid: 'bg-brand-900 text-white hover:bg-brand-800',
+  solid: 'bg-primary text-white hover:bg-primary-hover',
   light: 'bg-white text-brand-900 hover:bg-white/90',
-  outline: 'border border-brand-900/15 text-brand-900 hover:border-brand-900/30',
-  ghost: 'text-brand-900',
+  outline: 'border border-line text-content hover:border-line',
+  ghost: 'text-content',
 }
 
 export default function ArrowButton({

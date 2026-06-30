@@ -3,6 +3,9 @@ import { ShieldCheck, RefreshCcw, AlertTriangle, CheckCircle2 } from 'lucide-rea
 import EyebrowLabel from '../components/EyebrowLabel'
 import ArrowButton from '../components/ArrowButton'
 import AuthMenu from '../components/AuthMenu'
+import Logo from '../components/Logo'
+import ThemeToggle from '../components/ThemeToggle'
+import Footer from '../components/Footer'
 import VerticalRail from '../components/VerticalRail'
 import RouteDoodle from '../components/RouteDoodle'
 import RouteMapHero from '../components/RouteMapHero'
@@ -18,10 +21,10 @@ function PillarSection({ eyebrow, title, body, reverse, visual }) {
     >
       <div>
         <EyebrowLabel>{eyebrow}</EyebrowLabel>
-        <h2 className="mt-4 font-display text-2xl font-bold leading-tight text-brand-900 sm:text-3xl">
+        <h2 className="mt-4 font-display text-2xl font-bold leading-tight text-content sm:text-3xl">
           {title}
         </h2>
-        <p className="mt-3 max-w-md text-[15px] leading-relaxed text-gray-500">{body}</p>
+        <p className="mt-3 max-w-md text-[15px] leading-relaxed text-muted">{body}</p>
       </div>
       <div>{visual}</div>
     </div>
@@ -30,7 +33,7 @@ function PillarSection({ eyebrow, title, body, reverse, visual }) {
 
 function VisualCard({ children }) {
   return (
-    <div className="rounded-3xl border border-brand-900/5 bg-sand-50 p-6 shadow-sm sm:p-8">
+    <div className="rounded-3xl border border-line-soft bg-sunken p-6 shadow-card sm:p-8">
       {children}
     </div>
   )
@@ -40,12 +43,17 @@ export default function Onboarding() {
   const navigate = useNavigate()
 
   return (
-    <div className="relative overflow-x-clip bg-white">
+    <div className="relative isolate overflow-x-clip bg-surface">
+      <div
+        className="rs-hero-wash pointer-events-none absolute inset-x-0 top-0 -z-10 h-[760px]"
+        aria-hidden="true"
+      />
       <VerticalRail top="RouteSarthi" bottom="Made for India" />
 
       <header className="mx-auto flex max-w-7xl items-center justify-between px-6 py-6 lg:px-16">
-        <span className="font-display text-lg font-bold text-brand-900">RouteSarthi</span>
-        <div className="flex items-center gap-5">
+        <Logo size={28} />
+        <div className="flex items-center gap-3 sm:gap-5">
+          <ThemeToggle />
           <AuthMenu />
           <ArrowButton variant="outline" onClick={() => navigate('/search')} className="hidden sm:inline-flex">
             Plan a journey
@@ -56,12 +64,12 @@ export default function Onboarding() {
       <section className="mx-auto grid max-w-7xl items-center gap-12 px-6 pb-16 pt-6 lg:grid-cols-2 lg:gap-10 lg:px-16 lg:pb-28 lg:pt-12">
         <div>
           <EyebrowLabel>RouteSarthi</EyebrowLabel>
-          <h1 className="mt-5 font-display text-4xl font-extrabold leading-[1.08] tracking-tight text-brand-900 sm:text-5xl lg:text-6xl">
+          <h1 className="mt-5 font-display text-4xl font-extrabold leading-[1.08] tracking-tight text-content sm:text-5xl lg:text-6xl">
             Every journey
             <br />
             deserves peace of mind.
           </h1>
-          <p className="mt-5 max-w-md text-base leading-relaxed text-gray-500">
+          <p className="mt-5 max-w-md text-base leading-relaxed text-muted">
             Not just tickets. Not just trains.
             <br />
             A complete travel companion.
@@ -101,19 +109,19 @@ export default function Onboarding() {
           visual={
             <VisualCard>
               <div className="space-y-3">
-                <div className="flex items-center justify-between rounded-xl bg-white px-4 py-3 shadow-sm">
+                <div className="flex items-center justify-between rounded-xl bg-surface px-4 py-3 shadow-soft">
                   <div>
-                    <p className="text-sm font-semibold text-brand-900">Direct</p>
-                    <p className="text-xs text-gray-400">Rourkela → Nashik</p>
+                    <p className="text-sm font-semibold text-content">Direct</p>
+                    <p className="text-xs text-faint">Rourkela → Nashik</p>
                   </div>
                   <span className="rounded-full bg-risk-50 px-2.5 py-1 text-xs font-semibold text-risk-600">
                     Waitlisted 38
                   </span>
                 </div>
-                <div className="flex items-center justify-between rounded-xl bg-white px-4 py-3 shadow-sm ring-1 ring-mist-200">
+                <div className="flex items-center justify-between rounded-xl bg-surface px-4 py-3 shadow-soft ring-1 ring-mist-200">
                   <div>
-                    <p className="text-sm font-semibold text-brand-900">Via Ranchi</p>
-                    <p className="text-xs text-gray-400">2h bus + confirmed express</p>
+                    <p className="text-sm font-semibold text-content">Via Ranchi</p>
+                    <p className="text-xs text-faint">2h bus + confirmed express</p>
                   </div>
                   <span className="rounded-full bg-safe-50 px-2.5 py-1 text-xs font-semibold text-safe-600">
                     92% Safe
@@ -131,12 +139,12 @@ export default function Onboarding() {
           body="Every transfer is scored on real historical delay data — we only recommend the ones you can actually make, with the buffer to prove it."
           visual={
             <VisualCard>
-              <div className="flex items-start gap-3 rounded-xl bg-white p-4 shadow-sm">
+              <div className="flex items-start gap-3 rounded-xl bg-surface p-4 shadow-soft">
                 <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-safe-600" />
                 <div>
                   <p className="text-sm font-semibold text-safe-600">94% connection safety</p>
-                  <p className="text-xs text-gray-400">95 min buffer at Ranchi</p>
-                  <p className="mt-2 text-xs leading-relaxed text-gray-500">
+                  <p className="text-xs text-faint">95 min buffer at Ranchi</p>
+                  <p className="mt-2 text-xs leading-relaxed text-muted">
                     Bus historically arrives with ~95 min to spare before your train departs — a wide safety margin.
                   </p>
                 </div>
@@ -152,17 +160,17 @@ export default function Onboarding() {
           visual={
             <VisualCard>
               <div className="space-y-2.5">
-                <div className="flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm shadow-sm">
+                <div className="flex items-center gap-2 rounded-xl bg-surface px-4 py-2.5 text-sm shadow-soft">
                   <AlertTriangle className="h-4 w-4 text-risk-600" />
-                  <span className="font-medium text-brand-900">Bus delayed</span>
+                  <span className="font-medium text-content">Bus delayed</span>
                 </div>
-                <div className="flex items-center gap-2 rounded-xl bg-mist-50 px-4 py-2.5 text-sm text-mist-600 shadow-sm">
+                <div className="flex items-center gap-2 rounded-xl bg-mist-50 px-4 py-2.5 text-sm text-mist-600 shadow-soft">
                   <RefreshCcw className="h-4 w-4" />
                   <span className="font-semibold">Re-routed from your location</span>
                 </div>
-                <div className="flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm shadow-sm">
+                <div className="flex items-center gap-2 rounded-xl bg-surface px-4 py-2.5 text-sm shadow-soft">
                   <CheckCircle2 className="h-4 w-4 text-safe-600" />
-                  <span className="font-medium text-brand-900">Still confirmed, still on time</span>
+                  <span className="font-medium text-content">Still confirmed, still on time</span>
                 </div>
               </div>
             </VisualCard>
@@ -170,15 +178,15 @@ export default function Onboarding() {
         />
       </section>
 
-      <section className="relative mx-6 mb-10 overflow-hidden rounded-[2.5rem] bg-gradient-to-br from-mist-50 via-sand-50 to-white px-6 py-16 sm:mx-10 sm:px-12 lg:mx-16 lg:px-20 lg:py-20">
+      <section className="relative mx-6 mb-10 overflow-hidden rounded-[2.5rem] bg-gradient-to-br from-mist-50 via-sand-50 to-surface px-6 py-16 sm:mx-10 sm:px-12 lg:mx-16 lg:px-20 lg:py-20">
         <RouteDoodle className="absolute -right-6 -top-6 h-32 w-32 text-mist-300/70" />
         <RouteDoodle className="absolute -bottom-10 left-6 h-28 w-28 rotate-180 text-brand-200/60" />
         <div className="relative mx-auto max-w-xl text-center">
           <EyebrowLabel align="center">Ready when you are</EyebrowLabel>
-          <h2 className="mt-4 font-display text-3xl font-bold text-brand-900 sm:text-4xl">
+          <h2 className="mt-4 font-display text-3xl font-bold text-content sm:text-4xl">
             Where to, today?
           </h2>
-          <p className="mt-3 text-sm text-gray-500">
+          <p className="mt-3 text-sm text-muted">
             Tell us where you're starting — we'll find the way, even if it isn't direct.
           </p>
           <div className="mt-7 flex justify-center">
@@ -188,6 +196,8 @@ export default function Onboarding() {
           </div>
         </div>
       </section>
+
+      <Footer />
     </div>
   )
 }

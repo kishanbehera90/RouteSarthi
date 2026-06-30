@@ -8,18 +8,41 @@ export const corridors = [
     from: { code: 'ROU', name: 'Rourkela', state: 'Odisha' },
     to: { code: 'NK', name: 'Nashik', state: 'Maharashtra' },
     tagline: 'Direct trains are scarce and mostly waitlisted — Ranchi unlocks 8 daily confirmed options.',
+    reasoning: {
+      direct: { confirmability: 12, note: 'WL 38 in sleeper' },
+      hubsScanned: [
+        { name: 'Bhubaneswar', dailyTrains: 5, confirmPct: 71, note: 'Wrong direction, +6h' },
+        { name: 'Jamshedpur', dailyTrains: 3, confirmPct: 64, note: 'Few onward trains' },
+        { name: 'Ranchi', dailyTrains: 8, confirmPct: 87, winner: true, note: '2h by bus' },
+      ],
+    },
   },
   {
     id: 'bhuj-shimla',
     from: { code: 'BHUJ', name: 'Bhuj', state: 'Gujarat' },
     to: { code: 'SML', name: 'Shimla', state: 'Himachal Pradesh' },
     tagline: 'No sensible direct rail link — Ahmedabad gives you the whole north-India trunk line.',
+    reasoning: {
+      direct: { confirmability: 6, note: 'No real direct route' },
+      hubsScanned: [
+        { name: 'Gandhidham', dailyTrains: 4, confirmPct: 68, note: 'Still a branch line' },
+        { name: 'Rajkot', dailyTrains: 6, confirmPct: 74, note: 'Limited northbound' },
+        { name: 'Ahmedabad', dailyTrains: 9, confirmPct: 88, winner: true, note: 'Trunk junction to Kalka' },
+      ],
+    },
   },
   {
     id: 'imphal-bengaluru',
     from: { code: 'IMP', name: 'Imphal', state: 'Manipur' },
     to: { code: 'BLR', name: 'Bengaluru', state: 'Karnataka' },
     tagline: 'Imphal has no rail link at all — Guwahati is the real starting line.',
+    reasoning: {
+      direct: { confirmability: 0, note: 'No rail link at all' },
+      hubsScanned: [
+        { name: 'Dimapur', dailyTrains: 3, confirmPct: 61, note: 'Far, few southbound' },
+        { name: 'Guwahati', dailyTrains: 6, confirmPct: 84, winner: true, note: 'Nearest major junction' },
+      ],
+    },
   },
 ]
 
@@ -31,6 +54,8 @@ const route = (overrides) => ({
   reliability: 0, // 0-100 composite score
   confirmation: 'confirmed', // 'confirmed' | 'rac' | 'waitlisted'
   waitlistPosition: null,
+  confirmationPct: null, // odds this route ends up confirmed (one input to reliability)
+  clearProbabilityPct: null, // for waitlisted routes: chance the WL clears
   why: '',
   legs: [],
   ...overrides,
@@ -46,6 +71,8 @@ export const routesByCorridor = {
       reliability: 28,
       confirmation: 'waitlisted',
       waitlistPosition: 38,
+      confirmationPct: 14,
+      clearProbabilityPct: 18,
       why: 'The only direct train (Rourkela–Nashik Road Express) runs 3x/week and is almost always heavily waitlisted in sleeper class.',
       legs: [
         {
@@ -60,6 +87,7 @@ export const routesByCorridor = {
           fareInr: 450,
           confirmation: 'waitlisted',
           waitlistPosition: 38,
+          clearProbabilityPct: 18,
           delayProfile: { avgMins: 45, onTimePct: 52 },
         },
       ],
@@ -72,6 +100,7 @@ export const routesByCorridor = {
       totalFareInr: 780,
       reliability: 92,
       confirmation: 'confirmed',
+      confirmationPct: 94,
       hub: { code: 'RNC', name: 'Ranchi' },
       why: 'Direct trains from Rourkela are only ~12% confirmable. Ranchi (2h away by bus) has 8 daily trains toward the Mumbai/Nashik line at 85%+ confirmation — and your connection there is historically very safe.',
       legs: [
@@ -118,6 +147,7 @@ export const routesByCorridor = {
       totalFareInr: 690,
       reliability: 81,
       confirmation: 'confirmed',
+      confirmationPct: 83,
       hub: { code: 'RNC', name: 'Ranchi' },
       why: 'A cheaper, slightly slower confirmed alternative via the same Ranchi hub on a different train.',
       legs: [
@@ -168,6 +198,8 @@ export const routesByCorridor = {
       reliability: 18,
       confirmation: 'waitlisted',
       waitlistPosition: 64,
+      confirmationPct: 8,
+      clearProbabilityPct: 9,
       why: 'No real direct rail route exists; the only "direct" option is a multi-change unreserved itinerary nobody should rely on.',
       legs: [
         {
@@ -182,6 +214,7 @@ export const routesByCorridor = {
           fareInr: 180,
           confirmation: 'waitlisted',
           waitlistPosition: 64,
+          clearProbabilityPct: 9,
           delayProfile: { avgMins: 50, onTimePct: 47 },
         },
       ],
@@ -194,6 +227,7 @@ export const routesByCorridor = {
       totalFareInr: 1450,
       reliability: 89,
       confirmation: 'confirmed',
+      confirmationPct: 91,
       hub: { code: 'ADI', name: 'Ahmedabad' },
       why: 'Bhuj sits at the end of a branch line. Ahmedabad (5h away) is a major trunk junction with multiple daily confirmed trains toward Shimla via Kalka.',
       legs: [
@@ -275,6 +309,7 @@ export const routesByCorridor = {
       totalFareInr: 2350,
       reliability: 85,
       confirmation: 'confirmed',
+      confirmationPct: 88,
       hub: { code: 'GHY', name: 'Guwahati' },
       why: 'Imphal has no rail link; Guwahati (~8h by bus/shared cab) is the nearest major junction with direct confirmed trains to Bengaluru.',
       legs: [

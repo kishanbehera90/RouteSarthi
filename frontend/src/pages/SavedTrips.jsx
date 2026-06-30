@@ -28,7 +28,7 @@ export default function SavedTrips() {
   return (
     <div className="mx-auto max-w-5xl">
       <EyebrowLabel>Your trips</EyebrowLabel>
-      <h1 className="mt-3 font-display text-xl font-bold text-brand-900">Saved trips</h1>
+      <h1 className="mt-3 font-display text-xl font-bold text-content">Saved trips</h1>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         {savedTrips.map((route) => (
           <RouteCard key={route.id} route={route} />

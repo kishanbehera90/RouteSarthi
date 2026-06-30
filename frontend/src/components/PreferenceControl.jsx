@@ -18,7 +18,7 @@ export default function PreferenceControl({ value, onChange, vertical = false })
             className={cn(
               'rounded-lg px-3 py-2 text-left text-sm font-medium transition',
               value === opt.value
-                ? 'bg-brand-600 text-white shadow-sm'
+                ? 'bg-primary text-white shadow-sm'
                 : 'text-brand-700 hover:bg-brand-50'
             )}
           >
@@ -30,7 +30,7 @@ export default function PreferenceControl({ value, onChange, vertical = false })
   }
 
   return (
-    <div className="inline-flex rounded-full border border-brand-100 bg-white p-1">
+    <div className="inline-flex rounded-full border border-brand-100 bg-surface p-1">
       {options.map((opt) => (
         <button
           key={opt.value}
@@ -39,7 +39,7 @@ export default function PreferenceControl({ value, onChange, vertical = false })
           className={cn(
             'rounded-full px-3.5 py-1.5 text-sm font-medium transition',
             value === opt.value
-              ? 'bg-brand-600 text-white shadow-sm'
+              ? 'bg-primary text-white shadow-sm'
               : 'text-brand-700 hover:bg-brand-50'
           )}
         >

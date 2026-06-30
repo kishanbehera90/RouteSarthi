@@ -9,7 +9,7 @@ export default function AuthMenu({ tone = 'light' }) {
   const { isAuthenticated, user, logout } = useAuthStore()
 
   const linkTone =
-    tone === 'dark' ? 'text-white/80 hover:text-white' : 'text-brand-700 hover:text-brand-900'
+    tone === 'dark' ? 'text-white/80 hover:text-white' : 'text-brand-700 hover:text-content'
 
   if (!isAuthenticated) {
     return (
@@ -24,16 +24,16 @@ export default function AuthMenu({ tone = 'light' }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 rounded-full border border-brand-900/10 bg-white px-2 py-1.5 text-sm font-semibold text-brand-900 shadow-sm"
+        className="flex items-center gap-2 rounded-full border border-line bg-surface px-2 py-1.5 text-sm font-semibold text-content shadow-soft"
       >
-        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand-900 text-xs font-bold text-white">
+        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
           {user?.name?.[0]?.toUpperCase() ?? <User className="h-3.5 w-3.5" />}
         </span>
         <span className="hidden sm:inline">{user?.name?.split(' ')[0] ?? 'Account'}</span>
       </button>
 
       {open && (
-        <div className="absolute right-0 z-30 mt-2 w-44 rounded-xl border border-brand-900/10 bg-white p-1.5 shadow-lg">
+        <div className="absolute right-0 z-30 mt-2 w-44 rounded-xl border border-line bg-surface p-1.5 shadow-pop">
           <button
             type="button"
             onClick={() => {

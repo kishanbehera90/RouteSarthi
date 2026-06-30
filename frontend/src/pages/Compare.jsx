@@ -29,8 +29,8 @@ export default function Compare() {
     <div className="mx-auto max-w-2xl">
       <BackLink>Back to results</BackLink>
       <EyebrowLabel>Compare</EyebrowLabel>
-      <h1 className="mt-3 font-display text-xl font-bold text-brand-900">Direct vs. smarter route</h1>
-      <p className="mt-1 text-sm text-gray-500">
+      <h1 className="mt-3 font-display text-xl font-bold text-content">Direct vs. smarter route</h1>
+      <p className="mt-1 text-sm text-muted">
         Here's the honest comparison — see why the detour usually wins.
       </p>
 
@@ -41,18 +41,18 @@ export default function Compare() {
         ].map(({ label, route }) => (
           <div
             key={label}
-            className="rounded-2xl border border-brand-900/10 bg-white p-4"
+            className="rounded-2xl border border-line bg-surface p-4 shadow-card"
           >
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">{label}</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-faint">{label}</p>
             {route ? (
               <>
                 <div className="mt-2">
                   <ConfirmationPill status={route.confirmation} waitlistPosition={route.waitlistPosition} />
                 </div>
-                <p className="mt-3 text-lg font-bold text-brand-900">
+                <p className="mt-3 text-lg font-bold text-content">
                   {formatFare(route.totalFareInr)}
                 </p>
-                <p className="text-sm text-gray-500">
+                <p className="text-sm text-muted">
                   {route.totalTimeMins ? formatDuration(route.totalTimeMins) : '—'}
                 </p>
                 <div className="mt-2">
@@ -63,7 +63,7 @@ export default function Compare() {
                 </ArrowButton>
               </>
             ) : (
-              <p className="mt-2 text-sm text-gray-400">No option found.</p>
+              <p className="mt-2 text-sm text-faint">No option found.</p>
             )}
           </div>
         ))}

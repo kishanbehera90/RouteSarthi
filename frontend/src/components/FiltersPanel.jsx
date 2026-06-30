@@ -20,7 +20,7 @@ export default function FiltersPanel({ vertical = false }) {
             type="button"
             onClick={() => toggleFilter(item.key)}
             className={`flex items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium transition ${
-              filters[item.key] ? 'bg-mist-50 text-mist-600' : 'text-gray-600 hover:bg-gray-50'
+              filters[item.key] ? 'bg-mist-50 text-mist-600' : 'text-muted hover:bg-sunken'
             }`}
           >
             {item.label}
@@ -40,8 +40,8 @@ export default function FiltersPanel({ vertical = false }) {
           onClick={() => toggleFilter(item.key)}
           className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
             filters[item.key]
-              ? 'border-brand-600 bg-brand-600 text-white'
-              : 'border-gray-200 bg-white text-gray-600 hover:border-brand-200'
+              ? 'border-brand-600 bg-primary text-white'
+              : 'border-line bg-surface text-muted hover:border-brand-200'
           }`}
         >
           {item.label}

@@ -35,8 +35,8 @@ export default function HubPicker() {
     <div className="mx-auto max-w-2xl">
       <BackLink>Back to results</BackLink>
       <EyebrowLabel>Choose a hub</EyebrowLabel>
-      <h1 className="mt-3 font-display text-xl font-bold text-brand-900">Pick your origin hub</h1>
-      <p className="mt-1 text-sm text-gray-500">
+      <h1 className="mt-3 font-display text-xl font-bold text-content">Pick your origin hub</h1>
+      <p className="mt-1 text-sm text-muted">
         When a nearby city is much better connected, we route you there first. Here's the first-mile cost for each.
       </p>
 
@@ -45,18 +45,18 @@ export default function HubPicker() {
           const best = hubRoutes[0]
           const firstMile = best.legs[0]
           return (
-            <div key={hub.code} className="rounded-2xl border border-brand-900/10 bg-white p-4">
+            <div key={hub.code} className="rounded-2xl border border-line bg-surface p-4 shadow-card transition-shadow hover:shadow-lift">
               <div className="flex items-center gap-2">
                 <MapPinned className="h-4 w-4 text-mist-500" />
-                <p className="font-semibold text-brand-900">{hub.name}</p>
+                <p className="font-semibold text-content">{hub.name}</p>
               </div>
-              <div className="mt-2 flex items-center gap-2 text-sm text-gray-500">
+              <div className="mt-2 flex items-center gap-2 text-sm text-muted">
                 <ModeIcon mode={firstMile.mode} className="h-4 w-4 text-brand-400" />
                 <span>
                   {formatDuration(firstMile.durationMins)} · {formatFare(firstMile.fareInr)} first-mile
                 </span>
               </div>
-              <p className="mt-2 text-xs text-gray-400">
+              <p className="mt-2 text-xs text-faint">
                 {hubRoutes.length} confirmed route{hubRoutes.length > 1 ? 's' : ''} onward from here
               </p>
               <ArrowButton as={Link} to={`/routes/${best.id}`} variant="ghost" className="mt-3 text-sm">
@@ -66,7 +66,7 @@ export default function HubPicker() {
           )
         })}
         {byHub.size === 0 && (
-          <p className="text-sm text-gray-400">No cross-origin hub needed for this route.</p>
+          <p className="text-sm text-faint">No cross-origin hub needed for this route.</p>
         )}
       </div>
     </div>

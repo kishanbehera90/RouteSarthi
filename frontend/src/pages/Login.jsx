@@ -3,6 +3,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Phone, ShieldCheck, User as UserIcon } from 'lucide-react'
 import EyebrowLabel from '../components/EyebrowLabel'
 import ArrowButton from '../components/ArrowButton'
+import Logo from '../components/Logo'
+import ThemeToggle from '../components/ThemeToggle'
 import { useAuthStore } from '../store/useAuthStore'
 
 export default function Login() {
@@ -45,15 +47,18 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-svh flex-col bg-white">
+    <div className="flex min-h-svh flex-col bg-surface">
       <header className="flex items-center justify-between px-6 py-6 lg:px-16">
-        <Link to="/" className="font-display text-lg font-bold text-brand-900">
-          RouteSarthi
+        <Link to="/">
+          <Logo size={26} />
         </Link>
-        <Link to="/" className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-brand-600">
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Back home
-        </Link>
+        <div className="flex items-center gap-3">
+          <ThemeToggle />
+          <Link to="/" className="flex items-center gap-1.5 text-sm text-faint hover:text-brand-600">
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Back home
+          </Link>
+        </div>
       </header>
 
       <div className="flex flex-1 items-center justify-center px-6 pb-16">
@@ -62,20 +67,20 @@ export default function Login() {
 
           {step === 'phone' && (
             <form onSubmit={sendOtp}>
-              <h1 className="mt-3 font-display text-2xl font-bold text-brand-900">
+              <h1 className="mt-3 font-display text-2xl font-bold text-content">
                 Log in or sign up
               </h1>
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-sm text-muted">
                 We'll text you a one-time code — no password to remember.
               </p>
 
               <label className="mt-6 block">
-                <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-gray-400">
+                <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-faint">
                   Mobile number
                 </span>
-                <div className="flex items-center gap-2 rounded-xl border border-brand-900/10 bg-white px-3 py-3">
-                  <Phone className="h-4 w-4 text-gray-400" />
-                  <span className="text-sm text-gray-400">+91</span>
+                <div className="flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-3">
+                  <Phone className="h-4 w-4 text-faint" />
+                  <span className="text-sm text-faint">+91</span>
                   <input
                     type="tel"
                     inputMode="numeric"
@@ -85,7 +90,7 @@ export default function Login() {
                     value={phone}
                     onChange={(e) => setPhone(e.target.value.replace(/\D/g, ''))}
                     placeholder="98765 43210"
-                    className="w-full bg-transparent text-base font-medium text-brand-900 outline-none"
+                    className="w-full bg-transparent text-base font-medium text-content outline-none"
                   />
                 </div>
               </label>
@@ -103,19 +108,19 @@ export default function Login() {
 
           {step === 'otp' && (
             <form onSubmit={verifyOtp}>
-              <h1 className="mt-3 font-display text-2xl font-bold text-brand-900">
+              <h1 className="mt-3 font-display text-2xl font-bold text-content">
                 Enter the code
               </h1>
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-sm text-muted">
                 Sent to +91 {phone}. (Demo mode — any 4–6 digit code works.)
               </p>
 
               <label className="mt-6 block">
-                <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-gray-400">
+                <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-faint">
                   OTP
                 </span>
-                <div className="flex items-center gap-2 rounded-xl border border-brand-900/10 bg-white px-3 py-3">
-                  <ShieldCheck className="h-4 w-4 text-gray-400" />
+                <div className="flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-3">
+                  <ShieldCheck className="h-4 w-4 text-faint" />
                   <input
                     type="text"
                     inputMode="numeric"
@@ -125,7 +130,7 @@ export default function Login() {
                     value={otp}
                     onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
                     placeholder="••••"
-                    className="w-full bg-transparent text-base font-medium tracking-widest text-brand-900 outline-none"
+                    className="w-full bg-transparent text-base font-medium tracking-widest text-content outline-none"
                   />
                 </div>
               </label>
@@ -141,7 +146,7 @@ export default function Login() {
               <button
                 type="button"
                 onClick={() => setStep('phone')}
-                className="mt-3 block w-full text-center text-sm text-gray-400"
+                className="mt-3 block w-full text-center text-sm text-faint"
               >
                 Change number
               </button>
@@ -150,26 +155,26 @@ export default function Login() {
 
           {step === 'name' && (
             <form onSubmit={finishSignup}>
-              <h1 className="mt-3 font-display text-2xl font-bold text-brand-900">
+              <h1 className="mt-3 font-display text-2xl font-bold text-content">
                 What should we call you?
               </h1>
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-sm text-muted">
                 First time here — just your first name is fine.
               </p>
 
               <label className="mt-6 block">
-                <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-gray-400">
+                <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-faint">
                   Name
                 </span>
-                <div className="flex items-center gap-2 rounded-xl border border-brand-900/10 bg-white px-3 py-3">
-                  <UserIcon className="h-4 w-4 text-gray-400" />
+                <div className="flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-3">
+                  <UserIcon className="h-4 w-4 text-faint" />
                   <input
                     type="text"
                     required
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="e.g. Kishan"
-                    className="w-full bg-transparent text-base font-medium text-brand-900 outline-none"
+                    className="w-full bg-transparent text-base font-medium text-content outline-none"
                   />
                 </div>
               </label>

@@ -7,7 +7,7 @@ export function Skeleton({ className }) {
 // Matches the RouteCard footprint so the grid doesn't jump when data arrives.
 export function RouteCardSkeleton() {
   return (
-    <div className="rounded-2xl border border-brand-900/10 bg-white p-4 shadow-sm sm:p-5">
+    <div className="rounded-2xl border border-line bg-surface p-4 shadow-card sm:p-5">
       <div className="flex items-center justify-between gap-2">
         <Skeleton className="h-6 w-24 rounded-full" />
         <Skeleton className="h-6 w-16 rounded-full" />
@@ -64,7 +64,7 @@ export function CompareSkeleton() {
       <Skeleton className="mt-2 h-4 w-80 max-w-full" />
       <div className="mt-5 grid grid-cols-2 gap-3">
         {Array.from({ length: 2 }).map((_, i) => (
-          <div key={i} className="rounded-2xl border border-brand-900/10 bg-white p-4">
+          <div key={i} className="rounded-2xl border border-line bg-surface p-4 shadow-card">
             <Skeleton className="h-3 w-16" />
             <Skeleton className="mt-3 h-6 w-20 rounded-full" />
             <Skeleton className="mt-3 h-6 w-24" />

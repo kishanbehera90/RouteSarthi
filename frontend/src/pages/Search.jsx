@@ -57,8 +57,8 @@ export default function SearchPage() {
       <div className="lg:grid lg:grid-cols-[1fr_360px] lg:items-start lg:gap-12">
         <div className="mx-auto w-full max-w-xl lg:mx-0">
           <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="relative rounded-2xl border border-brand-900/10 bg-white p-1">
-              <label className="block px-3 pt-2.5 text-xs font-medium uppercase tracking-wide text-gray-400">
+            <div className="relative rounded-2xl border border-line bg-surface p-1 shadow-card">
+              <label className="block px-3 pt-2.5 text-xs font-medium uppercase tracking-wide text-faint">
                 From
               </label>
               <input
@@ -66,11 +66,11 @@ export default function SearchPage() {
                 required
                 value={search.from}
                 onChange={(e) => setSearch({ from: e.target.value })}
-                className="w-full bg-transparent px-3 pb-2.5 text-base font-medium text-brand-900 outline-none"
+                className="w-full bg-transparent px-3 pb-2.5 text-base font-medium text-content outline-none"
                 placeholder="e.g. Rourkela"
               />
               <div className="border-t border-brand-50" />
-              <label className="block px-3 pt-2.5 text-xs font-medium uppercase tracking-wide text-gray-400">
+              <label className="block px-3 pt-2.5 text-xs font-medium uppercase tracking-wide text-faint">
                 To
               </label>
               <input
@@ -78,7 +78,7 @@ export default function SearchPage() {
                 required
                 value={search.to}
                 onChange={(e) => setSearch({ to: e.target.value })}
-                className="w-full bg-transparent px-3 pb-2.5 text-base font-medium text-brand-900 outline-none"
+                className="w-full bg-transparent px-3 pb-2.5 text-base font-medium text-content outline-none"
                 placeholder="e.g. Nashik"
               />
               <datalist id="cities">
@@ -91,7 +91,7 @@ export default function SearchPage() {
                 type="button"
                 onClick={swap}
                 aria-label="Swap source and destination"
-                className="absolute right-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-brand-900/10 bg-white shadow-sm"
+                className="absolute right-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-line bg-surface shadow-soft transition hover:shadow-card"
               >
                 <ArrowRightLeft className="h-4 w-4 text-brand-500" />
               </button>
@@ -104,7 +104,7 @@ export default function SearchPage() {
             />
 
             <div>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-400">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-faint">
                 What matters most?
               </p>
               <PreferenceControl value={search.pref} onChange={(pref) => setSearch({ pref })} />
@@ -117,7 +117,7 @@ export default function SearchPage() {
         </div>
 
         <div className="mx-auto mt-10 w-full max-w-xl lg:mx-0 lg:mt-0">
-          <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400">
+          <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-faint">
             <MapPinned className="h-3.5 w-3.5" />
             Popular corridors
           </p>
@@ -127,15 +127,15 @@ export default function SearchPage() {
                 key={corridor.id}
                 type="button"
                 onClick={() => pickCorridor(corridor)}
-                className="group flex w-full items-center justify-between rounded-2xl border border-brand-900/10 bg-white px-4 py-3.5 text-left transition hover:border-mist-300 hover:shadow-sm"
+                className="group flex w-full items-center justify-between rounded-2xl border border-line bg-surface px-4 py-3.5 text-left shadow-soft transition hover:border-mist-300 hover:shadow-card"
               >
                 <div>
-                  <p className="text-sm font-semibold text-brand-900">
+                  <p className="text-sm font-semibold text-content">
                     {corridor.from.name} → {corridor.to.name}
                   </p>
-                  <p className="mt-0.5 text-xs text-gray-400">{corridor.tagline}</p>
+                  <p className="mt-0.5 text-xs text-faint">{corridor.tagline}</p>
                 </div>
-                <ArrowRight className="h-4 w-4 shrink-0 text-gray-300 transition group-hover:translate-x-0.5 group-hover:text-mist-500" />
+                <ArrowRight className="h-4 w-4 shrink-0 text-faint transition group-hover:translate-x-0.5 group-hover:text-mist-500" />
               </button>
             ))}
           </div>

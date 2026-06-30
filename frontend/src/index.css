@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Class-based dark mode: toggled by adding `dark` to <html> */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   /* Brand: "trustworthy guide" — calm indigo, confirmed green, delay-risk amber */
   --color-brand-50: #eef1fc;
@@ -40,22 +43,115 @@
   --color-sand-100: #f3f0ea;
 
   --font-sans: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
-  --font-display: 'Poppins', 'Inter', system-ui, sans-serif;
+  --font-display: 'Clash Display', 'Inter', system-ui, sans-serif;
+
+  /* Elevation: soft, brand-indigo-tinted shadows (never flat black) */
+  --shadow-soft: 0 1px 2px rgba(22, 28, 69, 0.04), 0 1px 3px rgba(22, 28, 69, 0.06);
+  --shadow-card: 0 1px 2px rgba(22, 28, 69, 0.04), 0 10px 24px -10px rgba(22, 28, 69, 0.12);
+  --shadow-lift: 0 4px 10px -4px rgba(22, 28, 69, 0.10), 0 18px 36px -14px rgba(22, 28, 69, 0.18);
+  --shadow-pop: 0 12px 32px -8px rgba(22, 28, 69, 0.18);
+  --shadow-hero: 0 30px 64px -24px rgba(22, 28, 69, 0.28);
+
+  /* Semantic tokens — these flip in dark mode (see .dark block below) */
+  --color-canvas: #f6f7fb;        /* page background */
+  --color-surface: #ffffff;       /* cards, header, inputs, popovers */
+  --color-sunken: #f3f0ea;        /* nested / recessed panels */
+  --color-content: #161c45;       /* primary text */
+  --color-muted: #5a6175;         /* secondary text */
+  --color-faint: #98a0b5;         /* tertiary / hint text */
+  --color-line: rgba(22, 28, 69, 0.10);       /* default hairline border */
+  --color-line-soft: rgba(22, 28, 69, 0.05);  /* faint divider */
+  --color-primary: #161c45;       /* solid CTAs / selected pills */
+  --color-primary-hover: #1f2860;
 }
 
-html {
+:root {
   color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* Neutrals flip */
+  --color-canvas: #0b0f24;
+  --color-surface: #161d40;
+  --color-sunken: #10152f;
+  --color-content: #eaedfa;
+  --color-muted: #a7b0d6;
+  --color-faint: #727ca6;
+  --color-line: rgba(255, 255, 255, 0.12);
+  --color-line-soft: rgba(255, 255, 255, 0.07);
+  --color-primary: #4456c4;
+  --color-primary-hover: #5566cc;
+
+  /* Tint-chip backgrounds become deep, low-saturation fills… */
+  --color-brand-50: #1e2550;
+  --color-brand-100: #28316b;
+  --color-brand-200: #3a4690;
+  --color-safe-50: #102a20;
+  --color-safe-100: #1b3d2e;
+  --color-caution-50: #2a200a;
+  --color-caution-100: #3a2c10;
+  --color-risk-50: #2c1414;
+  --color-mist-50: #0f2723;
+  --color-mist-100: #14342f;
+  --color-mist-200: #1e4d45;
+  --color-sand-50: #141a38;
+  --color-sand-100: #10152f;
+
+  /* …while text/icon accents brighten for contrast on dark surfaces */
+  --color-brand-400: #8295e2;
+  --color-brand-500: #8295e2;
+  --color-brand-600: #a9b6f0;
+  --color-brand-700: #c3cbf5;
+  --color-brand-800: #d7ddf8;
+  --color-safe-500: #2ecf94;
+  --color-safe-600: #43d99e;
+  --color-caution-500: #f0a82a;
+  --color-caution-600: #f6b73f;
+  --color-risk-500: #ef5a5a;
+  --color-risk-600: #f87171;
+  --color-mist-500: #45c4b0;
+  --color-mist-600: #57cdba;
 }
 
 body {
   margin: 0;
   font-family: var(--font-sans);
-  background: #f7f8fc;
-  color: #161c45;
+  background: var(--color-canvas);
+  color: var(--color-content);
 }
 
 #root {
   min-height: 100svh;
+}
+
+/* Subtle cool wash for the in-app surface — layered, not flat */
+.rs-app-bg {
+  background:
+    radial-gradient(900px 420px at 100% -5%, rgba(47, 152, 133, 0.06), transparent 70%),
+    radial-gradient(1100px 520px at 0% -8%, rgba(61, 79, 184, 0.07), transparent 65%),
+    var(--color-canvas);
+}
+
+.dark .rs-app-bg {
+  background:
+    radial-gradient(900px 420px at 100% -5%, rgba(47, 152, 133, 0.10), transparent 70%),
+    radial-gradient(1100px 520px at 0% -8%, rgba(61, 79, 184, 0.16), transparent 65%),
+    var(--color-canvas);
+}
+
+/* Soft indigo + teal wash behind hero sections */
+.rs-hero-wash {
+  background:
+    radial-gradient(680px 360px at 80% 10%, rgba(47, 152, 133, 0.10), transparent 70%),
+    radial-gradient(760px 440px at 6% 0%, rgba(61, 79, 184, 0.10), transparent 66%);
+}
+
+.dark .rs-hero-wash {
+  background:
+    radial-gradient(680px 360px at 80% 10%, rgba(47, 152, 133, 0.16), transparent 70%),
+    radial-gradient(760px 440px at 6% 0%, rgba(61, 79, 184, 0.22), transparent 66%);
 }
 
 /* Shimmer sheen for loading skeletons */
@@ -69,6 +165,10 @@ body {
   position: relative;
   overflow: hidden;
   background-color: rgba(22, 28, 69, 0.06);
+}
+
+.dark .rs-skeleton {
+  background-color: rgba(255, 255, 255, 0.08);
 }
 
 .rs-skeleton::after {
@@ -87,6 +187,34 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .rs-skeleton::after {
+    animation: none;
+  }
+}
+
+/* Pulsing dot for the live-journey map marker */
+@keyframes rs-live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(47, 152, 133, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(47, 152, 133, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(47, 152, 133, 0);
+  }
+}
+
+.rs-live-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #2f9885;
+  border: 3px solid #fff;
+  animation: rs-live-pulse 1.6s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rs-live-dot {
     animation: none;
   }
 }

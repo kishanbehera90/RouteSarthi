@@ -10,7 +10,7 @@ export default function RouteMapHero() {
   return (
     <div className="relative mx-auto aspect-[4/5] w-full max-w-lg lg:max-w-none">
       <div
-        className="absolute inset-0 overflow-hidden rounded-[2rem] bg-gradient-to-br from-brand-900 via-brand-800 to-mist-600"
+        className="absolute inset-0 overflow-hidden rounded-[2rem] bg-gradient-to-br from-[#161c45] via-[#1f2860] to-[#237a6b]"
         style={{
           WebkitMaskImage: 'linear-gradient(to bottom, black 0%, black 62%, transparent 96%)',
           maskImage: 'linear-gradient(to bottom, black 0%, black 62%, transparent 96%)',
@@ -49,22 +49,22 @@ export default function RouteMapHero() {
         >
           <span
             className={
-              'flex h-10 w-10 items-center justify-center rounded-full shadow-lg ring-4 ' +
+              'flex h-10 w-10 items-center justify-center rounded-full shadow-lift ring-4 ' +
               (highlight
-                ? 'bg-white text-mist-600 ring-mist-300/50'
-                : 'bg-white/95 text-brand-700 ring-white/30')
+                ? 'bg-white text-[#237a6b] ring-mist-300/50'
+                : 'bg-white/95 text-[#263078] ring-white/30')
             }
           >
             <Icon className="h-4.5 w-4.5" />
           </span>
-          <span className="rounded-md bg-white/95 px-2 py-0.5 text-center text-[11px] font-semibold leading-tight text-brand-900 shadow-sm">
+          <span className="rounded-md bg-white/95 px-2 py-0.5 text-center text-[11px] font-semibold leading-tight text-brand-900 shadow-soft">
             {label}
             <span className="block text-[9px] font-medium text-gray-400">{sub}</span>
           </span>
         </div>
       ))}
 
-      <div className="absolute right-5 top-6 flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-mist-600 shadow-lg">
+      <div className="absolute right-5 top-6 flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-[#237a6b] shadow-lift">
         <ShieldCheck className="h-3.5 w-3.5" />
         92% connection safety
       </div>

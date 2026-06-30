@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Bookmark, BookmarkCheck, ExternalLink, LifeBuoy } from 'lucide-react'
+import { Bookmark, BookmarkCheck, ExternalLink, LifeBuoy, Share2 } from 'lucide-react'
 import LegTimeline from '../components/LegTimeline'
 import { Skeleton } from '../components/Skeleton'
 import WhyThisRoute from '../components/WhyThisRoute'
@@ -8,6 +8,7 @@ import PlanBChip from '../components/PlanBChip'
 import ReliabilityGauge from '../components/ReliabilityGauge'
 import EyebrowLabel from '../components/EyebrowLabel'
 import BackLink from '../components/BackLink'
+import ShareModal from '../components/ShareModal'
 import { RouteDetailSkeleton } from '../components/Skeleton'
 import { useJourneyStore } from '../store/useJourneyStore'
 import { useToastStore } from '../store/useToastStore'
@@ -21,10 +22,25 @@ const bookingLinks = {
   cab: { label: 'Book a cab', href: 'https://www.olacabs.com' },
 }
 
+// The three real inputs behind the single reliability number.
+function buildBreakdown(route) {
+  const moving = route.legs.filter((l) => l.mode !== 'connection' && l.delayProfile)
+  const conns = route.legs.filter(
+    (l) => l.mode === 'connection' && typeof l.connectionSafetyPct === 'number'
+  )
+  const avg = (arr, sel) => Math.round(arr.reduce((a, x) => a + sel(x), 0) / arr.length)
+  const items = []
+  if (route.confirmationPct != null) items.push({ label: 'Confirmation odds', value: route.confirmationPct })
+  if (moving.length) items.push({ label: 'On-time reliability', value: avg(moving, (l) => l.delayProfile.onTimePct) })
+  if (conns.length) items.push({ label: 'Connection safety', value: avg(conns, (l) => l.connectionSafetyPct) })
+  return items
+}
+
 export default function RouteDetail() {
   const { routeId } = useParams()
   const navigate = useNavigate()
   const [route, setRoute] = useState(null)
+  const [shareOpen, setShareOpen] = useState(false)
 
   const savedTrips = useJourneyStore((s) => s.savedTrips)
   const saveTrip = useJourneyStore((s) => s.saveTrip)
@@ -52,18 +68,18 @@ export default function RouteDetail() {
   }
 
   const summaryCard = (
-    <div className="rounded-2xl border border-brand-900/10 bg-white p-5">
+    <div className="rounded-2xl border border-line bg-surface p-5 shadow-lift">
       <EyebrowLabel>{route.type === 'cross-origin' ? `Via ${route.hub?.name}` : 'Direct'}</EyebrowLabel>
 
       <div className="mt-4 flex justify-center">
-        <ReliabilityGauge score={route.reliability} showLabel={false} />
+        <ReliabilityGauge score={route.reliability} showLabel={false} breakdown={buildBreakdown(route)} />
       </div>
 
       <div className="mt-4 flex items-baseline justify-center gap-3 border-t border-brand-50 pt-4">
-        <span className="font-display text-2xl font-bold text-brand-900">
+        <span className="font-display text-2xl font-bold text-content">
           {formatFare(route.totalFareInr)}
         </span>
-        <span className="text-sm text-gray-500">
+        <span className="text-sm text-muted">
           {route.totalTimeMins ? formatDuration(route.totalTimeMins) : '—'}
         </span>
       </div>
@@ -72,7 +88,7 @@ export default function RouteDetail() {
         <button
           type="button"
           onClick={() => navigate(`/live/${route.id}`)}
-          className="flex items-center justify-center gap-2 rounded-xl bg-brand-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-800"
+          className="flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover"
         >
           <LifeBuoy className="h-4 w-4" />
           Start journey
@@ -80,10 +96,18 @@ export default function RouteDetail() {
         <button
           type="button"
           onClick={handleSaveToggle}
-          className="flex items-center justify-center gap-2 rounded-xl border border-brand-900/10 bg-white px-4 py-3 text-sm font-semibold text-brand-700 transition hover:border-brand-900/20"
+          className="flex items-center justify-center gap-2 rounded-xl border border-line bg-surface px-4 py-3 text-sm font-semibold text-brand-700 transition hover:border-line"
         >
           {isSaved ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}
           {isSaved ? 'Saved' : 'Save trip'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShareOpen(true)}
+          className="flex items-center justify-center gap-2 rounded-xl border border-line bg-surface px-4 py-3 text-sm font-semibold text-brand-700 transition hover:border-line"
+        >
+          <Share2 className="h-4 w-4" />
+          Share journey
         </button>
       </div>
     </div>
@@ -108,7 +132,7 @@ export default function RouteDetail() {
           </div>
 
           <div className="mt-5">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">
               Full itinerary
             </p>
             <LegTimeline legs={route.legs} />
@@ -119,7 +143,7 @@ export default function RouteDetail() {
           </div>
 
           <div className="mt-5 space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Book each leg</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-faint">Book each leg</p>
             {route.legs
               .filter((l) => l.mode !== 'connection')
               .map((leg) => {
@@ -131,7 +155,7 @@ export default function RouteDetail() {
                     href={link.href}
                     target="_blank"
                     rel="noreferrer"
-                    className="flex items-center justify-between rounded-xl border border-brand-900/10 bg-white px-4 py-3 text-sm font-medium text-brand-700"
+                    className="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 text-sm font-medium text-brand-700"
                   >
                     {leg.name}
                     <span className="flex items-center gap-1 text-mist-600">
@@ -147,6 +171,8 @@ export default function RouteDetail() {
           <div className="sticky top-20">{summaryCard}</div>
         </div>
       </div>
+
+      <ShareModal route={route} open={shareOpen} onClose={() => setShareOpen(false)} />
     </div>
   )
 }
