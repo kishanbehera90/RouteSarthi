@@ -53,3 +53,6 @@ CREATE TABLE IF NOT EXISTS cities (
 );
 CREATE INDEX IF NOT EXISTS cities_geom_idx ON cities USING GIST (geom);
 CREATE INDEX IF NOT EXISTS cities_name_idx ON cities (lower(asciiname));
+-- Both name columns are searched with OR in geocoding; without BOTH indexes
+-- Postgres falls back to a 558k-row seq scan (see ENGINEERING_NOTES Layer 3).
+CREATE INDEX IF NOT EXISTS cities_name_lower_idx ON cities (lower(name));

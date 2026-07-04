@@ -18,15 +18,20 @@ export default function Results() {
   const from = params.get('from') ?? ''
   const to = params.get('to') ?? ''
   const pref = params.get('pref') ?? 'confirmed'
+  const date = params.get('date') ?? ''
 
   const filters = useJourneyStore((s) => s.filters)
 
   const [state, setState] = useState({ loading: true, corridor: null, routes: [] })
+  const [showAll, setShowAll] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     setState((s) => ({ ...s, loading: true }))
-    fetch(`/api/routes?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pref=${pref}`)
+    fetch(
+      `/api/routes?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pref=${pref}` +
+        (date ? `&date=${date}` : '')
+    )
       .then((res) => res.json())
       .then((data) => {
         if (!cancelled) setState({ loading: false, corridor: data.corridor, routes: data.routes })
@@ -34,20 +39,27 @@ export default function Results() {
     return () => {
       cancelled = true
     }
-  }, [from, to, pref])
+  }, [from, to, pref, date])
 
   const visibleRoutes = useMemo(() => {
     return state.routes.filter((r) => {
-      if (filters.acOnly && r.totalFareInr < 600) return false
-      if (filters.fewerTransfers && r.legs.filter((l) => l.mode !== 'connection').length > 1) return false
+      if (filters.acOnly) {
+        // Engine routes carry real class data; mock routes fall back to fare proxy.
+        if (r.acAvailable === false) return false
+        if (r.acAvailable === undefined && r.totalFareInr < 600) return false
+      }
+      if (filters.fewerTransfers && (r.transfers ?? r.legs.filter((l) => l.mode === 'train').length - 1) > 0) return false
       if (filters.avoidLateNight) {
-        const movingLegs = r.legs.filter((l) => l.mode !== 'connection')
-        const lastLeg = movingLegs[movingLegs.length - 1]
+        // Last leg with a real arrival time (road legs carry none).
+        const arriving = r.legs.filter((l) => l.mode !== 'connection' && l.arrive)
+        const lastLeg = arriving[arriving.length - 1]
         if (lastLeg && isLateNightTime(lastLeg.arrive)) return false
       }
       return true
     })
   }, [state.routes, filters])
+
+  const shownRoutes = showAll ? visibleRoutes : visibleRoutes.slice(0, 6)
 
   if (state.loading) {
     return (
@@ -134,7 +146,7 @@ export default function Results() {
 
       {/* Mobile/tablet: horizontal pill controls. Desktop: sidebar (below) takes over. */}
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 lg:hidden">
-        <PreferenceControl value={pref} onChange={(p) => setParams({ from, to, pref: p })} />
+        <PreferenceControl value={pref} onChange={(p) => setParams(date ? { from, to, pref: p, date } : { from, to, pref: p })} />
         <FiltersPanel />
       </div>
 
@@ -146,7 +158,7 @@ export default function Results() {
                 <SlidersHorizontal className="h-3.5 w-3.5" />
                 Sort by
               </p>
-              <PreferenceControl vertical value={pref} onChange={(p) => setParams({ from, to, pref: p })} />
+              <PreferenceControl vertical value={pref} onChange={(p) => setParams(date ? { from, to, pref: p, date } : { from, to, pref: p })} />
             </div>
             <div className="border-t border-line-soft pt-4">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Filters</p>
@@ -160,10 +172,22 @@ export default function Results() {
             {visibleRoutes.length === 0 && (
               <p className="text-sm text-faint sm:col-span-2">No routes match your filters — try relaxing one.</p>
             )}
-            {visibleRoutes.map((route, i) => (
+            {shownRoutes.map((route, i) => (
               <RouteCard key={route.id} route={route} index={i} />
             ))}
           </div>
+
+          {!showAll && visibleRoutes.length > 6 && (
+            <div className="mt-4 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setShowAll(true)}
+                className="rounded-full border border-line bg-surface px-5 py-2.5 text-sm font-semibold text-brand-700 shadow-soft transition hover:shadow-card"
+              >
+                Show {visibleRoutes.length - 6} more trains
+              </button>
+            </div>
+          )}
 
           {state.routes.some((r) => r.type === 'cross-origin') && (
             <div className="mt-4 flex justify-center">

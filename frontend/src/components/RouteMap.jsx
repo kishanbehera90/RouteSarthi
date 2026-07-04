@@ -31,11 +31,40 @@ function buildStops(legs) {
   return stops
 }
 
-// One entry per moving leg, with the segment midpoint for a mode badge.
+// Dense polyline for the drawn route line: uses each train leg's real
+// intermediate-station path (pathCoords) when the backend supplies it, so the
+// line follows the actual rail alignment instead of a straight hop.
+function buildLineCoords(legs) {
+  const out = []
+  const push = (c) => {
+    if (c && c.length === 2 && c[0] != null && c[1] != null) {
+      const last = out[out.length - 1]
+      if (!last || last[0] !== c[0] || last[1] !== c[1]) out.push(c)
+    }
+  }
+  for (const leg of legs) {
+    if (leg.mode === 'connection') continue
+    if (Array.isArray(leg.pathCoords) && leg.pathCoords.length >= 2) {
+      for (const c of leg.pathCoords) push(c)
+    } else {
+      push(endpointCoords(leg, 'from'))
+      push(endpointCoords(leg, 'to'))
+    }
+  }
+  return out
+}
+
+// One entry per moving leg, badge placed at the leg's midpoint (uses the
+// path midpoint when available so the badge sits on the drawn line).
 function buildSegments(legs) {
   const segs = []
   for (const leg of legs) {
     if (leg.mode === 'connection') continue
+    const path = Array.isArray(leg.pathCoords) && leg.pathCoords.length >= 2 ? leg.pathCoords : null
+    if (path) {
+      segs.push({ mode: leg.mode, mid: path[Math.floor(path.length / 2)] })
+      continue
+    }
     const from = endpointCoords(leg, 'from')
     const to = endpointCoords(leg, 'to')
     if (!from || !to || (from[0] === to[0] && from[1] === to[1])) continue
@@ -139,7 +168,9 @@ export default function RouteMap({ legs, className = '', live = false, liveProgr
     const stops = buildStops(legs)
     if (stops.length < 2 || !containerRef.current) return
 
-    const coords = stops.map((s) => s.coords)
+    // Node markers sit on stops; the drawn LINE follows the dense rail path.
+    const coords = buildLineCoords(legs)
+    if (coords.length < 2) return
     coordsRef.current = coords
     const segments = buildSegments(legs)
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches

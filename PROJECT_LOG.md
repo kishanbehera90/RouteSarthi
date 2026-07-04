@@ -209,6 +209,242 @@ must be set to `frontend/`.)
 ---
 
 ## Changelog
+- **2026-07-04 (friend's 📌 list cleared)** — completed the three items left
+  for the backend owner: (1) **fares** — done earlier via calibration from 288k
+  real IRCTC-2023 quotes (per-class ₹/km), materially better than the ₹0.7/km
+  proxy (full telescopic slab table optional later); (2) **geocode
+  City,State** — done via the `/api/places` autocomplete + `IN_STATES` map +
+  rail-aware re-ranking (P10); (3) **ROUTE_STORE restart/worker safety** —
+  added `_rebuild_direct`: direct-route detail ids are semantic
+  (`train-board-alight`) so they rebuild statelessly from the graph on a store
+  miss (verified: `/api/routes/15004-GKP-ALD` resolves with an empty store).
+  Transfer ids still need the store (Redis remains the deploy-phase plan for
+  those). Net: detail links no longer 404 after a restart for the common case.
+- **2026-07-04 (six-bug batch + sweep)** — all user-caught:
+  1. **Station-code renames (P11):** 15004 alighted 61 km out at Gyanpur Road
+     while passing Prayagraj Jn — schedule data used renamed codes (PRYJ/PRRB/
+     MMCT/CSMT/SMVT/VGLJ/DDU) that carry no geo. ETL now normalises via
+     `CODE_RENAMES`; Prayagraj corridors went 10→15 options.
+  2. **Reasoning claimed "Direct wins" for an 81-km-away boarding** — direct
+     mode now requires transfers==0 AND type=='direct' (local boarding);
+     through-train-via-hub gets the cross-origin narrative.
+  3. **Filters:** AC-only now uses real per-train `classes`/`acAvailable`
+     (fare-proxy kept only for mock routes); avoid-late-night reads the last
+     leg that has an arrival time; fewer-transfers uses `transfers`.
+  4. **Compare page** no longer shows "No option found" on all-direct
+     corridors — compares best two options with honest labels.
+  5. **Maurya Exp "should board Raxaul" — NOT a bug:** data shows 15028 runs
+     GKP→…→Siwan→…→Rourkela and never serves Raxaul; engine correctly boarded
+     the nearest railhead the train actually stops at.
+  6. **"Show more trains"** — engine cap 10→16; Results shows 6 + expander.
+  Plus: engine now generates **planB** (next-ranked alternative) for every
+  route; cleanups from the tracked list (README tagline, duplicate import,
+  share-card typo, unused framer-motion dep). Verified in-browser: 15 routes
+  GKP→Prayagraj, "Show 9 more trains", Compare shows Direct ₹195 vs Via Basti
+  ₹371.
+- **2026-07-03 (results/detail depth pass — user-caught batch)** — six fixes
+  from testing Gorakhpur→Prayagraj:
+  1. **Only 6 options → 10.** Root cause: `_diversify` bucketed ALL direct
+     routes under one `_direct` key capped at 2. Fixed: directs are each a
+     distinct train (kept in full); only *transfer* routes get hub-deduped.
+     Cap raised 6→10. (The "missing" Chauri Chaura Exp 15004 was present all
+     along — the cap hid it.)
+  2. **Reasoning strip missing on direct corridors.** `_reasoning` now always
+     emits, in `mode:"direct"` (green through-train winner + "also checked N
+     hubs") or `mode:"cross-origin"` (existing hub-scan). Frontend
+     `DecisionReasoning` rewritten to render both modes.
+  3. **Reliability breakdown gone** (engine had no delayProfile/confirmationPct
+     the derived one needed). Engine now ships `reliabilityBreakdown` per route
+     from its real factors (no-transfer / connectivity / first-mile, or
+     connection-safety / hub / first-mile for transfers); RouteDetail prefers
+     it, falls back to the derived one for mock corridors.
+  4. **Empty "% connection safety · min buffer"** on road-access legs — those
+     carry null safety; LegTimeline now renders them as a plain road note.
+     Real train-transfer legs still show safety + buffer.
+  5. **Straight-line map → real rail path.** graph `single_train`/`one_transfer`
+     return the intermediate-station `path`; engine attaches `pathCoords` per
+     train leg; RouteMap draws the dense polyline through them (verified: GKP→
+     Prayagraj now bends through Varanasi, not a diagonal).
+  6. Direct `why` copy clarified ("no change of train"). All verified in-browser.
+- **2026-07-03 (geocode artifact + autocomplete — user-caught, see P10)** —
+  Gorakhpur→Prayagraj routed via Haryana because GeoNames has a duplicate
+  "Gorakhpur" (wrong state, bigger population). Fixed with rail-aware geocode
+  re-ranking (prefer the candidate with a same-named station within 20 km) +
+  new **`/api/places` autocomplete with state names** in the search form
+  (admin1→state map derived from our own data; picking a suggestion sends
+  "City, State" and the geocoder filters by it). Verified: direct 14111
+  GKP→Prayagraj 6h19m now tops the corridor; dropdown shows both Gorakhpurs
+  with states. *Note:* suggestion list is population-ordered (artifact rows
+  can appear first — harmless since the state label disambiguates); prefix
+  LIKE currently seq-scans cities — add a text_pattern_ops index if typing
+  latency ever bothers.
+- **2026-07-03 (reasoning coherence fix — user-caught, see P9)** — the
+  decision strip's winner showed worse numbers than the losers, and a direct
+  route scored "51% Risky" while a 2-transfer one scored "92% Safe". Fixed:
+  hubs now scored by through-trains-to-destination (the ranker's real metric),
+  backend emits an honest `conclusion` sentence the frontend renders verbatim,
+  and reliability rebalanced (direct ≥ floor 45, formula favours no-transfer;
+  transfers capped at 84 × connection safety). Verified in-browser.
+- **2026-07-03 (STEP 1 CLOSED OUT ✅)** — Finished everything in Step 1 that
+  runs on this machine, verified end-to-end in the browser:
+  - **IRCTC-2023 gap-fill:** +300 trains absent from the 2026 scrape loaded
+    with `source='irctc-2023'` (structured codes + dayCount). Totals now
+    **8,606 trains / 168,578 stops**; unmatched refs 8.6%→7.9%.
+  - **Real fares:** rates calibrated from 288k real Oct-2023 IRCTC quotes
+    (median baseFare/km: SL 0.58 · 3A 1.48 · 2A 2.10 · 1A 3.57 · CC 1.58 ·
+    2S 0.45); leg fare = haversine km ×1.25 route factor × class rate
+    (cheapest class the train offers — Rajdhani/Tejas price as 3A) + ₹40
+    reservation. Delhi→Mumbai SL now ~₹897 (was time-proxy nonsense).
+  - **Running days enforced:** `date` param flows frontend→API→engine→graph;
+    trains filtered by weekday (`TRAIN_DAYS`, graph cache v2); unknown days
+    assume daily (conservative).
+  - **Live `reasoning`:** engine now emits the hub-scan block from what it
+    actually evaluated — the decision animation runs on real searches
+    (verified: Imphal→Bengaluru shows Lumding/Hojai/Badarpur scanned, Dimapur
+    wins). confirmPct is a labelled connectivity proxy until Step 4.
+  - **Endpoints unified:** `/api/search` is now an alias of `/api/routes`
+    (same engine + seed fallback + date). Geocode tolerates "City, State"
+    input (matches city part; full state disambiguation still needs an
+    admin1 map). Benchmark after all changes: mean 11%, no regressions.
+  - **Deferred with reasons (needs Docker, absent on this machine):** OSRM
+    first/last-mile (straight-line ×1.25 stands in) and Redis route-store —
+    both are deploy-phase infra, stubs/config already in docker-compose.yml.
+- **2026-07-03 (DATA SWAP DONE ✅)** — **2016 timetable replaced with the
+  May-2026 scrape.** New `etl/load_v2.py` (dry-run mode + real load, 18s):
+  parses `intermediate_stops` text → stop rows; **station name→code mapping**
+  built from the IRCTC-2023 dataset's structured `stationList` (3,773 names)
+  + datameet stations (9,426 total) + a hand-built ALIASES table for post-2016
+  renames (Ahilyanagar→ANG, C Sambhajinagar→AWB, MGR Chennai→MAS, Hubballi→UBL,
+  SMVB, NZM, VGLJ→JHS…) + unique-prefix fuzzy fallback; day-rollover inferred
+  from clock resets. Unmatched refs: 19.6% → **8.6%** across three matcher
+  iterations. **Result: 8,306 trains / 162,883 stops loaded** (was 5,208 /
+  417k — old data counted passing stations, not real halts). `trains` now
+  carries `days_of_week`, `classes`, `distance_km`, `source`, `last_verified`.
+  **Acceptance:** benchmark mean 11% (durations hold; Rourkela→Ranchi reads
+  2.9h on BOTH datasets → our 4.5h reference was wrong, not the engine);
+  **identity spot-check matches the manual audit exactly** (12262 CSMT Duronto
+  HWH 05:35 ✓, 12510 GHY SMVB 06:15 ✓, 12475→SVDK ✓); Imphal→Bengaluru now
+  routes via Dimapur (realistic). **Known residuals:** (1) ~8.6% station refs
+  still unmatched → some trains lose head/tail stops (e.g. 12952 truncates to
+  Kota) — grow ALIASES to fix; (2) hub count 1,979→384 (threshold vs cleaner
+  halt data — fine); (3) `days_of_week` stored but NOT yet enforced in routing
+  (needs a travel-date param through the API); (4) price_data.csv (124MB,
+  IRCTC Oct-2023) shelved in `candidates/irctc-2023/` as the fare-formula seed.
+- **2026-07-03 (data decision)** — **Kaggle vetting done; new base chosen.**
+  Three candidates compared: (1) IRCTC scrape Oct-2023, Apache-2.0, 3,292
+  trains + per-class fare table (`baseFare`×`classCode`×`distance`) + running
+  days; (2) data.gov.in ~2020, GPL-2, 11,114 trains — **rejected: pre-COVID**
+  (the era the audit proved everything changed) despite biggest coverage;
+  (3) fresh scrape **May-2026, CC0, 8,366 trains** with `days_of_week`,
+  `classes`, `distance`, stop-level detail in `intermediate_stops` text —
+  **chosen as the new base**. #1 kept as the fare-formula seed + running-days
+  cross-check. **Decision: drop 2016 schedules from the DB entirely** (0%
+  audit validity makes them a harmful "fallback"), keep the raw file on disk,
+  keep `source`/`last_verified` columns for the live-refresh future, keep the
+  datameet stations table (geo is stable; ETL must alias renamed codes like
+  BCT→MMCT, CST→CSMT). Next: inspect #3's files, build the v2 ETL, reload,
+  re-run benchmark + a fresh 10-train audit as acceptance.
+- **2026-07-03 (audit results)** — **Train-validity audit DONE (28 trains,
+  manual vs erail): 0 SAME · 19 CHANGED (68%) · 9 GONE (32%).** Not one
+  sampled train from the 2016 timetable is bookable as-is. Findings:
+  every flagship demo train is retimed (e.g. 12262 dep 08:20→05:35) or gone
+  (15902); several routes materially changed — 12475/12477/12472 extended
+  JAT→SVDK (Katra), 12510 terminus SBC→SMVB (opened 2022), station code
+  renames (BCT→MMCT, CST→CSMT); **train-number reuse** (19604 and 56812 now
+  belong to entirely different routes — silently wrong results, worse than
+  404s); passenger trains hit hardest (4/5 GONE — post-COVID MEMU/special
+  renumbering). **Strategy consequence: bulk re-seed from a current dataset is
+  now URGENT, the critical path** — lazy refresh can't fix a 100%-stale base.
+  Combined with the benchmark (durations ~7% off), the full picture: corridor
+  *speeds* are fine, train *identities* are ~100% unreliable. **CRIS portal
+  probed (via VPN): it's an internal/partner API gateway** (groups: ntes.cris.in,
+  fois.cris.in, eps.cris.in…), sign-in only, no public registration — dead end
+  without a formal partnership; noted for a future official-access application.
+  Next: vet + load a 2024-25 Kaggle timetable (multi-source ETL with
+  `source`/`last_verified`), then re-run `etl/benchmark.py` + re-audit as the
+  acceptance test.
+- **2026-07-03 (later)** — **Train-validity audit prepared** (zero API calls —
+  RapidAPI free tier turned out to be ~10 calls/month, so the audit runs
+  manually against NTES/erail instead; the 10 calls are reserved as a guarded
+  budget for future automated spot-checks). New `backend/etl/sample_trains.py`
+  prints a 28-train checklist: the 8 trains the flagship demos depend on +
+  stratified random samples (premium/express/passenger/other). Verdict per
+  train: SAME / CHANGED / GONE on erail.in — validity % = SAME/28. Sample
+  already surfaced 2016-data dirt: "-Slip" suffixed train ids, missing
+  departure times. `RAPIDAPI_KEY` added to config/.env.example (gitignored
+  value). CRIS official API portal to be probed via VPN (was unreachable from
+  our network).
+- **2026-07-03** — **Truth benchmark built + run** (`backend/etl/benchmark.py`:
+  10 famous corridors, engine's fastest route vs today's real fastest train).
+  **Surprise result that reverses our assumption:** the 2016 timetable's
+  *durations* are only **7% off on average** (9/10 corridors within ±10%) —
+  trunk-route travel times barely changed in a decade. The one outlier
+  (Rourkela→Ranchi −37%) may be a bad reference value, not engine error.
+  **Revised data strategy:** staleness risk is NOT travel time — it's **train
+  identity** (renumbered/cancelled trains a user can't actually book, missing
+  post-2016 trains like Vande Bharats — e.g. our Mumbai→Madgaon "7.4h" train
+  may no longer exist even though the duration looks right). So the priority
+  order flips: **(1) per-train validity verification via a live API (lazy
+  refresh + `last_verified`) is now the main event; (2) bulk re-seed from a
+  newer Kaggle scrape is still wanted but demoted to "nice, when vetted";**
+  (3) fares remain the most user-visible inaccuracy (still the slab-formula 📌).
+  Benchmark doubles as the acceptance test for any data change — re-run it
+  after loading anything new. (Windows note: run with `PYTHONIOENCODING=utf-8`.)
+- **2026-07-02 (later)** — **Reproducibility + contract fixes applied** (from
+  the review below; see ENGINEERING_NOTES P7):
+  - `requirements.txt`: uncommented `psycopg[binary]` + added `psycopg-pool`
+    (they're imported at module load — fresh clones couldn't boot at all).
+  - New `backend/etl/download.py`: fetches stations.json + schedules.json
+    (datameet) and IN.txt (GeoNames) into `data/raw/` — repo is now
+    reproducible on any machine.
+  - `app/main.py`: `/api/routes` now catches *any* engine failure (no `.env`,
+    DB unreachable) and serves the seed corridors instead of 500ing.
+  - Transfer routes: leg-1 `arrive` now populated (was `null`, contract wants
+    HH:MM); hub arrival threaded through `graph.one_transfer`.
+  - `graph.py`: documented the `% 1440` connection-wait day-boundary
+    limitation (errors skew conservative; proper day-aware math lands with
+    Step 3).
+  - `sql/schema.sql`: re-synced with `load_all.py` (added
+    `cities_name_lower_idx` — the Layer-3 index).
+  - Backend README: full reproducible setup steps (env → download → load →
+    verify → run).
+  - **📌 Left for next backend session (owner: backend):** (1) fares → real
+    distance-slab formula (§4F) — current ₹0.7/km proxy is visibly wrong on
+    short hops; (2) geocode "City, State" disambiguation (two Aurangabads;
+    needs a GeoNames admin1-code→state-name map); (3) move `ROUTE_STORE` +
+    result cache to Redis before deploy — in-process versions reset on restart
+    (detail links 404) and break under `--workers >1`.
+- **2026-07-02** — **Backend code review + data-freshness research** (after
+  pulling the Phase B engine).
+  - *Review verdict:* engine architecture (in-memory graph + thin DB) is sound
+    and well-documented. Issues found, ranked: **(1) Reproducibility blocker —**
+    `requirements.txt` still has `psycopg`/`psycopg_pool` commented out although
+    `app/db.py` imports them at module load, so a fresh clone can't even boot the
+    seed endpoints; and `data/raw/` + `graph_cache.pkl` are gitignored with **no
+    download script**, so only the original machine can run the engine (bus
+    factor 1 — confirmed: this machine has no `backend/data/` at all).
+    **(2) Correctness niggles** — transfer wait uses `% 1440` (conflates day
+    boundaries); leg-1 `arrive` is `null` on transfer routes; geocode resolves
+    ambiguous names (two Aurangabads) by population only; fare = flat ₹0.7/km
+    proxy instead of the slab formula; `schema.sql` drifted from `load_all.py`
+    (missing `cities_name_lower_idx`). **(3) Deploy notes** — in-process
+    `ROUTE_STORE`/caches vanish on restart (detail links 404) and assume a
+    single worker.
+  - *Data-freshness research:* **datameet timetable is from Aug 2016** (~10
+    years stale — renumbered/new/retimed trains make it materially wrong for
+    real users); data.gov.in OGD timetable is ~2017 and bot-blocked (403).
+    **No current bulk open download exists.** Practical path chosen to propose:
+    (a) re-seed the base timetable from a recent community scrape (Kaggle
+    2024-25 sets — vet coverage/licence first); (b) add a **lazy refresh
+    layer** — on each searched corridor, verify the involved trains against a
+    free-tier live API (RapidAPI `irctc1` / indianrailapi.com), store
+    `last_verified` per train so hot corridors self-heal to current data within
+    free rate limits; (c) surface freshness honestly in the UI ("timings
+    verified <date>"); (d) try the **official CRIS API portal**
+    (crisapis.indianrail.gov.in — unreachable from here, likely India-only;
+    check from a local browser) and pursue registration; (e) GeoNames cities +
+    station geo are fine (stable/continuously updated). Delay seed (Kaggle
+    Sep-2025 ETrain scrape) already in the plan.
 - **2026-06-30** — Phase B kicked off. Researched + locked the data strategy
   (`PHASE_B_PLAN.md`). Built and verified the backend scaffold (Step 0):
   FastAPI serving the full contract from ported seed fixtures. Provisioned

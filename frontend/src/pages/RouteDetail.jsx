@@ -2,14 +2,13 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Bookmark, BookmarkCheck, ExternalLink, LifeBuoy, Share2 } from 'lucide-react'
 import LegTimeline from '../components/LegTimeline'
-import { Skeleton } from '../components/Skeleton'
+import { Skeleton, RouteDetailSkeleton } from '../components/Skeleton'
 import WhyThisRoute from '../components/WhyThisRoute'
 import PlanBChip from '../components/PlanBChip'
 import ReliabilityGauge from '../components/ReliabilityGauge'
 import EyebrowLabel from '../components/EyebrowLabel'
 import BackLink from '../components/BackLink'
 import ShareModal from '../components/ShareModal'
-import { RouteDetailSkeleton } from '../components/Skeleton'
 import { useJourneyStore } from '../store/useJourneyStore'
 import { useToastStore } from '../store/useToastStore'
 import { formatDuration, formatFare } from '../lib/utils'
@@ -22,8 +21,13 @@ const bookingLinks = {
   cab: { label: 'Book a cab', href: 'https://www.olacabs.com' },
 }
 
-// The three real inputs behind the single reliability number.
+// The inputs behind the single reliability number. Prefer the engine's own
+// breakdown (real computed factors); fall back to deriving one from leg data
+// (mock corridors, which carry delayProfile instead).
 function buildBreakdown(route) {
+  if (Array.isArray(route.reliabilityBreakdown) && route.reliabilityBreakdown.length) {
+    return route.reliabilityBreakdown
+  }
   const moving = route.legs.filter((l) => l.mode !== 'connection' && l.delayProfile)
   const conns = route.legs.filter(
     (l) => l.mode === 'connection' && typeof l.connectionSafetyPct === 'number'

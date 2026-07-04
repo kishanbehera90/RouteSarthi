@@ -23,10 +23,21 @@ uvicorn app.main:app --reload --port 8000
 - Health: http://localhost:8000/health
 - Try: http://localhost:8000/api/routes?from=Rourkela&to=Nashik&pref=confirmed
 
-## Infra (Step 1 onward)
+## Full engine (Step 1 — real data)
+```bash
+cp .env.example .env         # then set DATABASE_URL (team Supabase, or local Docker below)
+python etl/download.py       # fetch raw data into data/raw/ (gitignored)
+python etl/load_all.py       # load Postgres/PostGIS (~2 min)
+python etl/verify.py         # sanity-check counts + core queries
+uvicorn app.main:app --reload --port 8000
+```
+Without a `.env`, the server still boots and serves the 3 seed corridors —
+the engine gracefully falls back. First boot with a DB builds
+`data/processed/graph_cache.pkl` (~30s once, ~0.5s after).
+
+Local infra alternative (if you have Docker):
 ```bash
 docker compose up -d        # Postgres+PostGIS + Redis
-cp .env.example .env
 ```
 
 ## Layout

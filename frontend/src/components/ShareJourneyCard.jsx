@@ -53,7 +53,7 @@ export default function ShareJourneyCard({ route }) {
         {route.why && <p className="mt-3 text-xs leading-snug text-muted">{route.why}</p>}
 
         <p className="mt-4 border-t border-line-soft pt-3 text-[11px] font-medium text-faint">
-          Planned with RouteSarthi · Peace of mind,every time.
+          Planned with RouteSarthi · Peace of mind, every time.
         </p>
       </div>
     </div>

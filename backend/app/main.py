@@ -75,10 +75,16 @@ def search_routes(
     from_: str = Query("", alias="from"),
     to: str = "",
     pref: str = "confirmed",
+    date: str = "",
 ):
-    # Live engine over real data. Falls back to seed only if the engine can't
-    # geocode the place (so the 3 mock corridors still demo even pre-load).
-    result = engine.search(from_, to, pref)
+    # Live engine over real data. Falls back to seed if the engine can't
+    # geocode the place OR can't run at all (no .env / DB unreachable / no
+    # graph cache) — so a fresh clone still serves the 3 demo corridors.
+    try:
+        result = engine.search(from_, to, pref, date or None)
+    except Exception as e:  # noqa: BLE001
+        print("engine unavailable, serving seed:", e)
+        result = {"error": "place_not_found"}
     if result.get("error") == "place_not_found":
         corridor = seed.match_corridor(from_, to)
         if corridor:
@@ -96,14 +102,46 @@ def get_route(route_id: str, response: Response):
     return route
 
 
-# --- Step 1: live cross-origin engine (real data) ------------------------
-# Returns routes computed from the rail network for ANY two places in India.
-# Unifies with /api/routes in Phase C; kept separate now so the verified seed
-# contract layer stays untouched while the engine matures.
+@app.get("/api/places")
+def suggest_places(q: str = ""):
+    """Autocomplete: top places matching a prefix, WITH their state — so users
+    pick 'Gorakhpur, Uttar Pradesh' and never hit spelling/ambiguity issues."""
+    q = q.strip().lower()
+    if len(q) < 2:
+        return {"places": []}
+    try:
+        from .db import get_pool
+        from .engine import IN_STATES
+        with get_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT name, admin1, population FROM cities
+                   WHERE lower(name) LIKE %s OR lower(asciiname) LIKE %s
+                   ORDER BY population DESC NULLS LAST LIMIT 12;""",
+                (q + "%", q + "%"),
+            )
+            out, seen = [], set()
+            for name, admin1, _pop in cur.fetchall():
+                state = IN_STATES.get(admin1, "")
+                key = (name.lower(), state)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"name": name, "state": state})
+                if len(out) >= 8:
+                    break
+        return {"places": out}
+    except Exception as e:  # noqa: BLE001
+        print("places suggest unavailable:", e)
+        return {"places": []}
+
+
+# Unified: /api/search is now an alias of /api/routes (same engine + seed
+# fallback). Kept for compatibility with earlier scripts/benchmarks.
 @app.get("/api/search")
 def search_engine(
     from_: str = Query("", alias="from"),
     to: str = "",
     pref: str = "confirmed",
+    date: str = "",
 ):
-    return engine.search(from_, to, pref)
+    return search_routes(from_, to, pref, date)

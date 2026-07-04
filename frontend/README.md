@@ -1,6 +1,6 @@
 # RouteSarthi — Frontend (Phase A)
 
-**Pohochao, har haal mein.** RouteSarthi is an AI-powered travel assistant that
+**Peace of mind, every time.** RouteSarthi is an AI-powered travel assistant that
 finds *confirmed, reliable* ways to travel across India — even from poorly
 connected towns — by routing you through nearby better-connected hubs, scoring
 connections on real delay history, and acting as a live lifeline if a leg breaks

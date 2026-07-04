@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowRightLeft, ArrowRight, MapPinned } from 'lucide-react'
 import { useJourneyStore } from '../store/useJourneyStore'
@@ -8,9 +9,70 @@ import JourneyDatePicker from '../components/JourneyDatePicker'
 import { corridors } from '../data/routes'
 import heroRail from '../assets/hero-rail.webp'
 
-const cityNames = Array.from(
-  new Set(corridors.flatMap((c) => [c.from.name, c.to.name]))
-)
+// City input with live "Name, State" suggestions from /api/places — so users
+// pick the right Gorakhpur (UP vs Haryana) and never fight spellings.
+function PlaceInput({ label, value, onChange, placeholder }) {
+  const [sugs, setSugs] = useState([])
+  const [open, setOpen] = useState(false)
+  const timer = useRef()
+
+  const handle = (v) => {
+    onChange(v)
+    clearTimeout(timer.current)
+    const q = v.split(',')[0].trim()
+    if (q.length < 2) {
+      setSugs([])
+      setOpen(false)
+      return
+    }
+    timer.current = setTimeout(() => {
+      fetch(`/api/places?q=${encodeURIComponent(q)}`)
+        .then((r) => r.json())
+        .then((d) => {
+          setSugs(d.places ?? [])
+          setOpen((d.places ?? []).length > 0)
+        })
+        .catch(() => setSugs([]))
+    }, 250)
+  }
+
+  return (
+    <div className="relative">
+      <label className="block px-3 pt-2.5 text-xs font-medium uppercase tracking-wide text-faint">
+        {label}
+      </label>
+      <input
+        required
+        autoComplete="off"
+        value={value}
+        onChange={(e) => handle(e.target.value)}
+        onFocus={() => sugs.length > 0 && setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        className="w-full bg-transparent px-3 pb-2.5 text-base font-medium text-content outline-none"
+        placeholder={placeholder}
+      />
+      {open && (
+        <div className="absolute left-2 right-2 top-full z-30 -mt-1 overflow-hidden rounded-xl border border-line bg-surface shadow-pop">
+          {sugs.map((p) => (
+            <button
+              key={`${p.name}|${p.state}`}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onChange(p.state ? `${p.name}, ${p.state}` : p.name)
+                setOpen(false)
+              }}
+              className="flex w-full items-baseline justify-between gap-3 px-3 py-2 text-left text-sm transition hover:bg-sunken"
+            >
+              <span className="font-medium text-content">{p.name}</span>
+              <span className="shrink-0 text-xs text-faint">{p.state}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function SearchPage() {
   const navigate = useNavigate()
@@ -18,7 +80,10 @@ export default function SearchPage() {
   const setSearch = useJourneyStore((s) => s.setSearch)
 
   const goToResults = (from, to, pref) =>
-    navigate(`/results?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pref=${pref}`)
+    navigate(
+      `/results?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pref=${pref}` +
+        (search.date ? `&date=${search.date}` : '')
+    )
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -58,34 +123,19 @@ export default function SearchPage() {
         <div className="mx-auto w-full max-w-xl lg:mx-0">
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="relative rounded-2xl border border-line bg-surface p-1 shadow-card">
-              <label className="block px-3 pt-2.5 text-xs font-medium uppercase tracking-wide text-faint">
-                From
-              </label>
-              <input
-                list="cities"
-                required
+              <PlaceInput
+                label="From"
                 value={search.from}
-                onChange={(e) => setSearch({ from: e.target.value })}
-                className="w-full bg-transparent px-3 pb-2.5 text-base font-medium text-content outline-none"
+                onChange={(v) => setSearch({ from: v })}
                 placeholder="e.g. Rourkela"
               />
               <div className="border-t border-brand-50" />
-              <label className="block px-3 pt-2.5 text-xs font-medium uppercase tracking-wide text-faint">
-                To
-              </label>
-              <input
-                list="cities"
-                required
+              <PlaceInput
+                label="To"
                 value={search.to}
-                onChange={(e) => setSearch({ to: e.target.value })}
-                className="w-full bg-transparent px-3 pb-2.5 text-base font-medium text-content outline-none"
+                onChange={(v) => setSearch({ to: v })}
                 placeholder="e.g. Nashik"
               />
-              <datalist id="cities">
-                {cityNames.map((name) => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
 
               <button
                 type="button"

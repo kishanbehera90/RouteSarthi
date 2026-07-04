@@ -1,14 +1,14 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { Sparkles, X, Radar, Check, ArrowRight, RotateCcw } from 'lucide-react'
+import { Sparkles, X, Radar, Check, ArrowRight, RotateCcw, TrainFront } from 'lucide-react'
 import { cn } from '../lib/utils'
 
-// Animated "watch the engine choose" strip: direct option fails → nearby hubs
-// get scanned → the winning hub is revealed. Plays once on mount; replayable.
+// Animated "watch the engine choose" strip. Two modes:
+//  - cross-origin: direct fails → nearby hubs scanned → winning hub revealed.
+//  - direct: a through train wins directly (also-checked hubs shown muted).
+// Plays once on mount; replayable.
 export default function DecisionReasoning({ reasoning, from, to }) {
-  const hubs = reasoning?.hubsScanned ?? []
-  const winner = hubs.find((h) => h.winner) ?? hubs[hubs.length - 1]
-  // stages: direct(0), scan(1), hubs(2..1+n), conclusion(2+n)
-  const total = 3 + hubs.length
+  const items = buildItems(reasoning, from, to)
+  const total = items.length + 1 // +1 for the conclusion stage
 
   const prefersReduced =
     typeof window !== 'undefined' &&
@@ -32,7 +32,7 @@ export default function DecisionReasoning({ reasoning, from, to }) {
         }
         return s + 1
       })
-    }, 600)
+    }, 550)
   }
 
   useEffect(() => {
@@ -41,14 +41,10 @@ export default function DecisionReasoning({ reasoning, from, to }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reasoning])
 
-  if (!reasoning) return null
+  if (!reasoning || items.length === 0) return null
   const vis = (i) => step > i
-
   const stageCls = (i) =>
-    cn(
-      'transition-all duration-500 ease-out',
-      vis(i) ? 'opacity-100 translate-y-0' : 'translate-y-1 opacity-0'
-    )
+    cn('transition-all duration-500 ease-out', vis(i) ? 'opacity-100 translate-y-0' : 'translate-y-1 opacity-0')
 
   return (
     <div className="rounded-2xl border border-line bg-surface p-4 shadow-card">
@@ -68,72 +64,84 @@ export default function DecisionReasoning({ reasoning, from, to }) {
       </div>
 
       <div className="mt-3 flex flex-wrap items-stretch gap-2">
-        {/* Direct fails */}
-        <div className={stageCls(0)}>
-          <div className="flex h-full items-center gap-2 rounded-xl border border-risk-500/20 bg-risk-50 px-3 py-2">
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-risk-500/15 text-risk-600">
-              <X className="h-3.5 w-3.5" />
-            </span>
-            <div className="leading-tight">
-              <p className="text-xs font-semibold text-content">Direct {from} → {to}</p>
-              <p className="text-[11px] font-medium text-risk-600">
-                {reasoning.direct.confirmability}% confirmable · {reasoning.direct.note}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <Connector show={vis(1)} />
-
-        {/* Scan */}
-        <div className={stageCls(1)}>
-          <div className="flex h-full items-center gap-2 rounded-xl bg-sunken px-3 py-2 text-muted">
-            <Radar className="h-4 w-4 text-mist-500" />
-            <p className="text-xs font-semibold">Scanned {hubs.length} nearby hubs</p>
-          </div>
-        </div>
-
-        {/* Hubs */}
-        {hubs.map((h, idx) => (
-          <Fragment key={h.name}>
-            <Connector show={vis(2 + idx)} />
-            <div className={stageCls(2 + idx)}>
-              <div
-                className={cn(
-                  'flex h-full items-center gap-2 rounded-xl border px-3 py-2',
-                  h.winner
-                    ? 'border-safe-100 bg-safe-50 ring-1 ring-safe-500/20'
-                    : 'border-line bg-surface'
-                )}
-              >
-                {h.winner && (
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-safe-500/15 text-safe-600">
-                    <Check className="h-3.5 w-3.5" />
-                  </span>
-                )}
-                <div className="leading-tight">
-                  <p className={cn('text-xs font-semibold', h.winner ? 'text-safe-600' : 'text-content')}>
-                    {h.name}
-                  </p>
-                  <p className={cn('text-[11px] font-medium', h.winner ? 'text-safe-600' : 'text-faint')}>
-                    {h.dailyTrains}/day · {h.confirmPct}%
-                  </p>
-                </div>
-              </div>
+        {items.map((it, i) => (
+          <Fragment key={i}>
+            {i > 0 && <Connector show={vis(i)} />}
+            <div className={stageCls(i)}>
+              <ItemChip item={it} />
             </div>
           </Fragment>
         ))}
       </div>
 
-      {/* Conclusion */}
-      <div className={cn('mt-3', stageCls(2 + hubs.length))}>
+      <div className={cn('mt-3', stageCls(items.length))}>
         <p className="flex items-start gap-1.5 text-sm text-content">
           <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-mist-500" />
           <span>
-            <span className="font-semibold">Via {winner?.name} wins</span> — {winner?.dailyTrains} confirmed
-            trains a day at {winner?.confirmPct}%+, vs just {reasoning.direct.confirmability}% direct.
+            <span className="font-semibold">{reasoning.conclusion.split(' — ')[0]}</span>
+            {reasoning.conclusion.includes(' — ')
+              ? ` — ${reasoning.conclusion.split(' — ').slice(1).join(' — ')}`
+              : ''}
           </span>
         </p>
+      </div>
+    </div>
+  )
+}
+
+function buildItems(reasoning, from, to) {
+  if (!reasoning) return []
+  if (reasoning.mode === 'direct') {
+    const w = reasoning.winner ?? {}
+    const also = reasoning.alsoChecked ?? []
+    return [
+      { kind: 'directWin', title: `Direct ${from} → ${to}`, sub: `${w.dailyTrains ?? ''} daily direct trains` },
+      ...(also.length ? [{ kind: 'scan', label: `Also checked ${also.length} nearby hub${also.length > 1 ? 's' : ''}` }] : []),
+      ...also.map((h) => ({ kind: 'muted', title: h.name, sub: h.note })),
+    ]
+  }
+  const hubs = reasoning.hubsScanned ?? []
+  return [
+    {
+      kind: 'directFail',
+      title: `Direct ${from} → ${to}`,
+      sub: `${reasoning.direct.confirmability}% confirmable · ${reasoning.direct.note}`,
+    },
+    { kind: 'scan', label: `Scanned ${hubs.length} nearby hub${hubs.length > 1 ? 's' : ''}` },
+    ...hubs.map((h) => ({
+      kind: h.winner ? 'winner' : 'muted',
+      title: h.name,
+      sub: `${h.dailyTrains}/day · ${h.confirmPct}%`,
+    })),
+  ]
+}
+
+function ItemChip({ item }) {
+  if (item.kind === 'scan') {
+    return (
+      <div className="flex h-full items-center gap-2 rounded-xl bg-sunken px-3 py-2 text-muted">
+        <Radar className="h-4 w-4 text-mist-500" />
+        <p className="text-xs font-semibold">{item.label}</p>
+      </div>
+    )
+  }
+  const styles = {
+    directFail: { wrap: 'border-risk-500/20 bg-risk-50', icon: X, badge: 'bg-risk-500/15 text-risk-600', sub: 'text-risk-600' },
+    directWin: { wrap: 'border-safe-100 bg-safe-50 ring-1 ring-safe-500/20', icon: TrainFront, badge: 'bg-safe-500/15 text-safe-600', title: 'text-safe-600', sub: 'text-safe-600' },
+    winner: { wrap: 'border-safe-100 bg-safe-50 ring-1 ring-safe-500/20', icon: Check, badge: 'bg-safe-500/15 text-safe-600', title: 'text-safe-600', sub: 'text-safe-600' },
+    muted: { wrap: 'border-line bg-surface', icon: null, sub: 'text-faint' },
+  }[item.kind]
+  const Icon = styles.icon
+  return (
+    <div className={cn('flex h-full items-center gap-2 rounded-xl border px-3 py-2', styles.wrap)}>
+      {Icon && (
+        <span className={cn('flex h-6 w-6 shrink-0 items-center justify-center rounded-full', styles.badge)}>
+          <Icon className="h-3.5 w-3.5" />
+        </span>
+      )}
+      <div className="leading-tight">
+        <p className={cn('text-xs font-semibold', styles.title ?? 'text-content')}>{item.title}</p>
+        {item.sub && <p className={cn('text-[11px] font-medium', styles.sub)}>{item.sub}</p>}
       </div>
     </div>
   )
@@ -142,12 +150,7 @@ export default function DecisionReasoning({ reasoning, from, to }) {
 function Connector({ show }) {
   return (
     <div className="flex items-center self-center">
-      <ArrowRight
-        className={cn(
-          'h-4 w-4 text-faint transition-opacity duration-500',
-          show ? 'opacity-100' : 'opacity-0'
-        )}
-      />
+      <ArrowRight className={cn('h-4 w-4 text-faint transition-opacity duration-500', show ? 'opacity-100' : 'opacity-0')} />
     </div>
   )
 }

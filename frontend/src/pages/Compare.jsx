@@ -22,22 +22,34 @@ export default function Compare() {
 
   if (!routes) return <CompareSkeleton />
 
+  // Best direct vs best alternative. On corridors where everything is direct
+  // (well-connected pairs) compare the top two options instead of showing an
+  // empty "no option found" card.
   const direct = routes.find((r) => r.type === 'direct')
-  const best = routes.find((r) => r.type === 'cross-origin')
+  let alt = routes.find((r) => r.type === 'cross-origin')
+  if (!alt) alt = routes.find((r) => r.id !== direct?.id)
+  const allDirect = alt && alt.type === 'direct'
 
   return (
     <div className="mx-auto max-w-2xl">
       <BackLink>Back to results</BackLink>
       <EyebrowLabel>Compare</EyebrowLabel>
-      <h1 className="mt-3 font-display text-xl font-bold text-content">Direct vs. smarter route</h1>
+      <h1 className="mt-3 font-display text-xl font-bold text-content">
+        {allDirect ? 'Your top two options' : 'Direct vs. smarter route'}
+      </h1>
       <p className="mt-1 text-sm text-muted">
-        Here's the honest comparison — see why the detour usually wins.
+        {allDirect
+          ? 'This corridor is well connected — both best options are direct trains.'
+          : "Here's the honest comparison — see why the detour usually wins."}
       </p>
 
       <div className="mt-5 grid grid-cols-2 gap-3">
         {[
-          { label: 'Direct', route: direct },
-          { label: best?.hub ? `Via ${best.hub.name}` : 'Cross-origin', route: best },
+          { label: direct ? 'Direct' : 'Best option', route: direct ?? routes[0] },
+          {
+            label: alt?.hub ? `Via ${alt.hub.name}` : allDirect ? 'Next best' : 'Cross-origin',
+            route: alt,
+          },
         ].map(({ label, route }) => (
           <div
             key={label}

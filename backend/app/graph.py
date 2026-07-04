@@ -18,7 +18,7 @@ import time
 from .db import connect
 
 _CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "processed", "graph_cache.pkl")
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2  # v2: adds TRAIN_DAYS + TRAIN_CLASSES
 
 # tunables
 HUB_MIN_TRAINS = 80      # a station busy enough to be a transfer hub
@@ -34,6 +34,8 @@ TRAIN_STOPS: dict[str, list] = {}
 # station_code -> list of (train_number, index_in_train)
 STATION_IDX: dict[str, list] = {}
 TRAIN_NAME: dict[str, str] = {}
+TRAIN_DAYS: dict[str, str] = {}    # "MON,TUE,…" ("" or missing = assume daily)
+TRAIN_CLASSES: dict[str, str] = {} # "SL,3A,…" for fare-class picking
 HUB_TRAINS: dict[str, int] = {}   # hub code -> num_trains (busy stations only)
 STATIONS: list = []               # (code, name, lat, lng, num_trains) for nearest-railhead
 STATION_COORD: dict = {}          # code -> [lng, lat] for map drawing
@@ -49,10 +51,12 @@ def _tmin(s):
     return int(h) * 60 + int(m)
 
 
-def _populate(trains, stations, train_stops, station_idx, hub_trains):
+def _populate(trains, stations, train_stops, station_idx, hub_trains, train_days=None, train_classes=None):
     TRAIN_NAME.clear(); STATIONS.clear(); TRAIN_STOPS.clear(); STATION_IDX.clear()
-    HUB_TRAINS.clear(); STATION_COORD.clear()
+    HUB_TRAINS.clear(); STATION_COORD.clear(); TRAIN_DAYS.clear(); TRAIN_CLASSES.clear()
     TRAIN_NAME.update(trains)
+    TRAIN_DAYS.update(train_days or {})
+    TRAIN_CLASSES.update(train_classes or {})
     STATIONS.extend(stations)
     TRAIN_STOPS.update(train_stops)
     STATION_IDX.update(station_idx)
@@ -68,10 +72,15 @@ def _load_from_db(attempts=3):
     for attempt in range(1, attempts + 1):
         try:
             trains, stations, train_stops, station_idx, hub_trains = {}, [], {}, {}, {}
+            train_days, train_classes = {}, {}
             with connect() as conn, conn.cursor() as cur:
-                cur.execute("SELECT number, name FROM trains;")
-                for num, name in cur.fetchall():
+                cur.execute("SELECT number, name, days_of_week, classes FROM trains;")
+                for num, name, days, classes in cur.fetchall():
                     trains[num] = name
+                    if days:
+                        train_days[num] = days
+                    if classes:
+                        train_classes[num] = classes
                 cur.execute("SELECT code, name, lat, lng, num_trains FROM stations WHERE lat IS NOT NULL;")
                 for code, name, lat, lng, n in cur.fetchall():
                     stations.append((code, name, float(lat), float(lng), n or 0))
@@ -88,7 +97,7 @@ def _load_from_db(attempts=3):
                     idx = len(lst)
                     lst.append((sc, _tmin(arr), _tmin(dep), day if day is not None else 1))
                     station_idx.setdefault(sc, []).append((tn, idx))
-            return trains, stations, train_stops, station_idx, hub_trains
+            return trains, stations, train_stops, station_idx, hub_trains, train_days, train_classes
         except Exception as e:  # noqa: BLE001
             last_err = e
             print(f"graph DB load attempt {attempt} failed: {e}")
@@ -177,12 +186,24 @@ def nearest_railheads(lat, lng, radius_km):
     return out
 
 
-def single_train(boards, alights):
+def runs_on(tn, day3):
+    """Does this train run on weekday `day3` ('MON'…)? Unknown days => assume
+    daily (conservative for coverage; the UI can't show a wrong day it never
+    filters). day3=None disables filtering."""
+    if day3 is None:
+        return True
+    days = TRAIN_DAYS.get(tn)
+    return not days or day3 in days
+
+
+def single_train(boards, alights, day3=None):
     """All single-train legs from any board station to any alight station
     (boarding strictly before alighting). Returns list of dicts."""
     out = []
     for bcode in boards:
         for tn, idx in STATION_IDX.get(bcode, []):
+            if not runs_on(tn, day3):
+                continue
             stops = TRAIN_STOPS[tn]
             b = stops[idx]
             dep = b[2] if b[2] is not None else b[1]
@@ -199,19 +220,23 @@ def single_train(boards, alights):
                         continue
                     out.append({"train": tn, "name": TRAIN_NAME.get(tn),
                                 "board": bcode, "dep": dep, "alight": s[0],
-                                "arr": arr, "in_train": in_train})
+                                "arr": arr, "in_train": in_train,
+                                "path": [stops[k][0] for k in range(idx, j + 1)]})
     return out
 
 
-def one_transfer(boards, alights):
+def one_transfer(boards, alights, day3=None):
     """origin railhead -> busy hub -> destination railhead, with a feasible
-    same-day connection at the hub. All in-memory."""
+    same-day connection at the hub. All in-memory. (day3 filters leg 2 by the
+    same weekday — an approximation consistent with the %1440 wait heuristic.)"""
     boards_set, alights_set = set(boards), set(alights)
 
     # leg 1: best (shortest in-train) way to reach each hub
     reached = {}   # hub -> (in_train1, train1, board, dep1, arr_hub)
     for bcode in boards_set:
         for tn, idx in STATION_IDX.get(bcode, []):
+            if not runs_on(tn, day3):
+                continue
             stops = TRAIN_STOPS[tn]
             b = stops[idx]
             dep = b[2] if b[2] is not None else b[1]
@@ -229,7 +254,8 @@ def one_transfer(boards, alights):
                         continue
                     cur = reached.get(hc)
                     if cur is None or it1 < cur[0]:
-                        reached[hc] = (it1, tn, bcode, dep, arr)
+                        reached[hc] = (it1, tn, bcode, dep, arr,
+                                       [stops[k][0] for k in range(idx, j + 1)])
     if not reached:
         return []
 
@@ -239,15 +265,20 @@ def one_transfer(boards, alights):
     # leg 2: hub -> destination with a feasible connection
     journeys = []
     for hc in top:
-        it1, t1, bcode, dep1, arr_hub = reached[hc]
+        it1, t1, bcode, dep1, arr_hub, path1 = reached[hc]
         for tn2, idx in STATION_IDX.get(hc, []):
-            if tn2 == t1:
+            if tn2 == t1 or not runs_on(tn2, day3):
                 continue
             stops = TRAIN_STOPS[tn2]
             h = stops[idx]
             dep2 = h[2] if h[2] is not None else h[1]
             if dep2 is None:
                 continue
+            # Clock-time wait with a midnight wrap. KNOWN LIMITATION: this can't
+            # tell "30 min later" from "30 min later tomorrow" — but CONN_MAX_WAIT
+            # rejects anything that *looks* like a long wait, so errors skew
+            # conservative (we may miss overnight connections, not invent bad
+            # ones). Proper day-aware connections land with Step 3 delay work.
             wait = (dep2 - arr_hub) % 1440
             if wait < CONN_MIN_BUFFER or wait > CONN_MAX_WAIT:
                 continue
@@ -263,9 +294,11 @@ def one_transfer(boards, alights):
                     journeys.append({
                         "hub": hc, "hub_trains": HUB_TRAINS.get(hc, 0),
                         "board": bcode, "alight": s[0],
-                        "t1": t1, "t1name": TRAIN_NAME.get(t1), "dep1": dep1, "it1": it1,
+                        "t1": t1, "t1name": TRAIN_NAME.get(t1), "dep1": dep1,
+                        "arr1": arr_hub, "it1": it1, "path1": path1,
                         "t2": tn2, "t2name": TRAIN_NAME.get(tn2), "dep2": dep2,
                         "arr2": arr2, "it2": it2, "wait": wait,
+                        "path2": [stops[k][0] for k in range(idx, j + 1)],
                     })
                     break  # first reachable alight on this train2 is enough
 

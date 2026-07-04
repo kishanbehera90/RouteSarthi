@@ -291,6 +291,152 @@ Repeat searches: **~0 ms** (0.00–0.02 ms). ✅
   lets animations finish), or check the settled DOM state instead of mid-anim.
 - **Why note it:** it wasted time once; now it's written down so it doesn't again.
 
+## P7 — The repo worked on exactly one laptop (reproducibility audit)
+- **Symptom:** after a fresh `git pull` on a second machine, the backend
+  couldn't run at all — and wouldn't have even served the seed corridors.
+- **How I found the cause:** attempted a from-scratch setup on the second
+  machine and traced each failure instead of copying working state over.
+- **Root cause (three stacked gaps):** (1) `db.py` imports `psycopg` /
+  `psycopg_pool` at module load, but both were still commented out in
+  `requirements.txt` → instant `ImportError`, taking the seed layer down with
+  it. (2) The raw data files (`data/raw/`) and the graph cache are gitignored
+  (correctly) but there was **no download script** — the only copy of the
+  pipeline inputs lived on one laptop. (3) The seed fallback in `/api/routes`
+  only caught `place_not_found`; a missing `.env`/unreachable DB raised and
+  became a 500.
+- **The fix:** uncommented the deps (+ `psycopg-pool`), wrote
+  `etl/download.py` (idempotent fetch of all three sources), and wrapped the
+  engine call so *any* failure degrades to seed data.
+- **Why this fix (and what I rejected):** committing the data files was
+  rejected (100+ MB, licence hygiene); a setup shell script was rejected in
+  favour of a cross-platform Python script that reuses `httpx` already in the
+  stack. The fallback fix restores the original design intent stated in
+  `main.py` ("failures here shouldn't block the seed endpoints").
+- **Impact:** fresh clone → `pip install` → `uvicorn` now boots and serves the
+  demo corridors with zero config; full engine needs only `.env` + two ETL
+  commands. Bus factor 1 → gone.
+- **Interview soundbite:** "Our engine ran perfectly — on one laptop. The
+  moment a second machine pulled the repo, three hidden assumptions surfaced:
+  deps that were imported but not declared, input data with no acquisition
+  script, and a fallback that didn't actually catch the failure it was designed
+  for. The lesson: reproducibility is a feature you have to *test*, by doing a
+  cold-start setup on a machine that isn't yours."
+
+## P8 — Replacing a 10-year-stale timetable (evidence-first data swap)
+- **Symptom:** the engine ran on a 2016 timetable. A 28-train manual audit vs
+  erail.in scored it **0 SAME / 19 CHANGED / 9 GONE** — not one train bookable
+  as-is (renumber reuse even made two trains silently *wrong*, not just missing).
+- **How I found the cause:** measured before acting — a 10-corridor duration
+  benchmark (`etl/benchmark.py`) + the manual identity audit
+  (`etl/sample_trains.py`). Surprise: durations were only ~7% off; *identity*
+  (numbers, names, timings, termini) was ~100% unreliable. That reframed the
+  problem from "re-scrape everything" to "replace the identity layer."
+- **The fix:** swap the base to a fresh May-2026 CC0 scrape (8,366 trains) via
+  `etl/load_v2.py`. Hard part: it used station *names*, not codes. Solution
+  was a **three-layer mapper**: (1) name→code dictionary harvested from an
+  Oct-2023 IRCTC dataset whose `stationList` had both fields; (2) a hand-built
+  alias table for post-2016 *station renames* (MGR Chennai, Ahilyanagar,
+  Virangana Lakshmibai Jhansi, SMVB…); (3) a unique-prefix fuzzy fallback.
+  Iterated with a dry-run coverage report: 19.6% → 13.5% → **8.6%** unmatched.
+  Day-rollover was inferred from clock-time resets (the scrape had no day
+  field). Old schedules dropped from the DB (kept on disk) — a 0%-valid
+  fallback is worse than none.
+- **Why this fix (and what I rejected):** rejected the biggest candidate
+  dataset (11k trains, ~2020) because it was *pre-COVID* — the exact era the
+  audit proved everything changed; size of stale data = more confidently wrong
+  answers. Rejected keeping 2016 rows as fallback for the same reason.
+- **Impact:** 5,208 → **8,306 trains** (+60% coverage); train identities now
+  match reality — spot-checks reproduce the manual audit exactly (12262 dep
+  05:35 ✓, 12510 → SMVB ✓); benchmark durations hold (~11%); plus three new
+  fields we never had (`days_of_week`, `classes`, `distance_km`) unlocking
+  run-day-aware routing, real AC filters, and slab fares.
+- **Interview soundbite:** "Instead of assuming our decade-old timetable was
+  bad, we measured *how* it was bad: travel times were fine (~7%), but train
+  identities were 100% stale. So the fix wasn't more data, it was *current
+  identity* — we swapped in a fresh scrape, solved its station-name→code
+  problem with a mapping harvested from a second dataset plus a rename alias
+  table, and validated the swap by reproducing our manual audit's findings
+  from inside our own database."
+
+## P9 — The reasoning strip contradicted its own verdict (user-caught)
+- **Symptom:** on Imphal→Bengaluru the decision strip declared "DIMAPUR wins —
+  65/day · 56%" while the *losing* hubs showed better numbers (Lumding 107/day
+  · 66%). And the winning route card said "Confirmed" next to "51% Risky",
+  while a 2-transfer alternative showed "92% Safe".
+- **Root cause (two bugs):** (1) the reasoning generator sent generic traffic
+  stats (trains/day) but the ranker actually picks on *through-trains to the
+  destination* — the display metric didn't match the decision metric, so the
+  verdict looked arbitrary. (2) The reliability formulas were backwards:
+  transfer routes could out-score no-transfer routes (a hub bonus with a cap
+  of 92 vs a direct formula that over-punished first-mile distance) — but a
+  transfer is inherent risk and should never rank "safer" than no transfer.
+- **The fix:** reasoning hubs are now ranked and scored by through-train count
+  to the destination (each hub chip says "N through train(s)" / "no through
+  train"), and the backend generates an explicit `conclusion` sentence stating
+  the real win reason ("the only nearby railhead with a through train — no
+  transfer risk"); the frontend renders that instead of composing its own.
+  Reliability rebalanced: direct = 68 + density/8 − firstmile/15 (floor 45),
+  transfers capped at 84 and scaled by connection safety.
+- **Why this fix:** the display must show the metric the algorithm decided on
+  — anything else erodes exactly the trust the feature exists to build.
+- **Impact:** winner now carries the best displayed score + a truthful "why";
+  no more Risky-winner/Safe-loser inversions (verified in-browser).
+- **Interview soundbite:** "Our explainability UI showed one metric while the
+  ranker decided on another, so the 'winner' looked wrong. The fix wasn't
+  prettier copy — it was making the display metric *be* the decision metric,
+  and having the backend state the actual win reason in one sentence."
+
+## P10 — "Gorakhpur" routed via Rajasthan (user-caught geocode artifact)
+- **Symptom:** Gorakhpur→Prayagraj (both UP, many direct trains) returned zero
+  direct options and routed via Sadulpur/Hisar — Haryana/Rajasthan railheads.
+- **How I found the cause:** queried the gazetteer for every "Gorakhpur":
+  GeoNames contains a **duplicate artifact** — a Gorakhpur in Haryana carrying
+  population 1,324,570 (bigger than the real UP city's 674,246!). Our geocoder
+  ranked by population, so the impostor won and the engine faithfully routed
+  from the wrong state.
+- **The fix (two layers):** (1) **rail-aware geocode re-ranking** — among
+  same-named candidates, prefer the one with a same-named railway station
+  within 20 km (UP Gorakhpur has GORAKHPUR JN 2 km away; the impostor has
+  nothing). Generic, no per-city hacks, and the right prior for a rail app.
+  (2) **Autocomplete with states** (user-requested): new `/api/places?q=`
+  endpoint returns top prefix matches WITH state names (admin1→state map
+  derived from our own data after the published GeoNames doc proved stale);
+  the search inputs now show a "Name, State" dropdown, and picking one sends
+  the state hint, which the geocoder uses as a filter.
+- **Why this fix:** population ranking is fine until the data lies; anchoring
+  ambiguity resolution to the rail network (the thing we actually route on)
+  makes the failure class disappear rather than whack-a-moling bad rows.
+- **Impact:** Gorakhpur→Prayagraj now boards at GORAKHPUR JN (287 trains/day),
+  direct train 14111, 6h19m, ₹214 — verified over HTTP and in-browser.
+- **Interview soundbite:** "A user searched two UP cities and got routed via
+  Rajasthan. The gazetteer had a duplicate 'Gorakhpur' with the wrong state
+  but the bigger population. Instead of patching that row, we changed the
+  prior: for a railway app, the real city is the one with a same-named
+  station next to it — plus a state-labelled autocomplete so ambiguity is
+  resolved by the user before it ever reaches the geocoder."
+
+## P11 — The train that "skipped" Prayagraj Jn (station-code renames)
+- **Symptom (user-caught):** 15004 Chaurichaura Exp alighted at Gyanpur Road
+  (61 km road hop) even though its route passes Prayagraj Jn itself.
+- **Diagnosis:** the train's stop list showed `… GYN > PRRB > PRYJ >…` — it
+  DOES reach Prayagraj Jn, but stored under the RENAMED code `PRYJ`. Our
+  stations table (geo source) only knows the old code `ALD`, so `PRYJ` had no
+  geo/num_trains → could never be a railhead → the engine's only matchable
+  alight on that train was Gyanpur Road. Same story for PRRB (Rambag/City),
+  MMCT, CSMT, SMVT, VGLJ, DDU.
+- **The fix:** a `CODE_RENAMES` normalisation layer in the ETL (new code → old
+  geo-bearing code) applied to every stop AND to the name→code map, so both
+  datasets converge on the codes that carry geo.
+- **Impact:** 15004 now alights at Allahabad City (in-town) instead of 61 km
+  out; Prayagraj corridors gained 5 extra route options (10→15) because ALD/
+  ALY became boardable; Prayagraj→X reasoning now correctly boards locally.
+- **Interview soundbite:** "A route detoured 61 km past the station it was
+  sitting in. Two datasets disagreed on the station's *code* after a
+  government renaming — one had the geography under the old code, one had the
+  schedule under the new one. The join key itself had bit-rotted. Fix: a
+  rename-normalisation layer at ingestion, so every source converges on the
+  geo-bearing code."
+
 ---
 
 ## Template for future entries

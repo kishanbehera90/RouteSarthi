@@ -5,10 +5,13 @@ pydantic>=2.9
 pydantic-settings>=2.6
 httpx>=0.27            # outbound calls + TestClient
 
-# --- Data layer (added in Step 1: static data load) ---
+# --- Data layer (Step 1: engine + ETL use these at import time) ---
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+
+# --- Deferred until needed ---
 # SQLAlchemy>=2.0
 # GeoAlchemy2>=0.15
-# psycopg[binary]>=3.2
 # alembic>=1.13
 
 # --- Cache (added in Step 4) ---

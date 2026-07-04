@@ -1,5 +1,5 @@
 import { motion } from 'motion/react'
-import { ShieldCheck, ShieldAlert } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Navigation } from 'lucide-react'
 import ModeIcon from './ModeIcon'
 import ConfirmationPill from './ConfirmationPill'
 import ConfirmationProbability from './ConfirmationProbability'
@@ -23,6 +23,16 @@ function OnTimeBar({ pct }) {
 }
 
 function ConnectionRow({ leg }) {
+  // Road-access legs (first/last mile) carry no train-connection safety —
+  // show them as a simple road note, not an empty "% connection safety".
+  if (leg.connectionSafetyPct == null) {
+    return (
+      <div className="ml-5 flex items-start gap-2 border-l-2 border-dashed border-line py-3 pl-4">
+        <Navigation className="h-4 w-4 text-mist-500" />
+        <p className="text-xs text-muted">{leg.note || 'Road transfer'}</p>
+      </div>
+    )
+  }
   const safe = leg.connectionSafetyPct >= 85
   const Icon = safe ? ShieldCheck : ShieldAlert
   return (
@@ -32,8 +42,7 @@ function ConnectionRow({ leg }) {
         <span className={safe ? 'font-semibold text-safe-600' : 'font-semibold text-caution-600'}>
           {leg.connectionSafetyPct}% connection safety
         </span>
-        {' · '}
-        {leg.bufferMins} min buffer
+        {leg.bufferMins != null ? ` · ${leg.bufferMins} min buffer` : ''}
         <p className="mt-0.5 text-muted">{leg.note}</p>
       </div>
     </div>
