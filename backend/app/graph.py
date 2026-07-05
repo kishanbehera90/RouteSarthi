@@ -39,6 +39,7 @@ TRAIN_CLASSES: dict[str, str] = {} # "SL,3A,…" for fare-class picking
 HUB_TRAINS: dict[str, int] = {}   # hub code -> num_trains (busy stations only)
 STATIONS: list = []               # (code, name, lat, lng, num_trains) for nearest-railhead
 STATION_COORD: dict = {}          # code -> [lng, lat] for map drawing
+STATION_NAME: dict = {}           # code -> display name (for stop lists)
 RAILHEAD_NEAR = 6                 # nearest stations to keep
 RAILHEAD_HUBS = 6                 # nearest big hubs to also keep (even if farther)
 HUB_RADIUS_KM = 500               # how far to look for a major gateway hub
@@ -53,7 +54,8 @@ def _tmin(s):
 
 def _populate(trains, stations, train_stops, station_idx, hub_trains, train_days=None, train_classes=None):
     TRAIN_NAME.clear(); STATIONS.clear(); TRAIN_STOPS.clear(); STATION_IDX.clear()
-    HUB_TRAINS.clear(); STATION_COORD.clear(); TRAIN_DAYS.clear(); TRAIN_CLASSES.clear()
+    HUB_TRAINS.clear(); STATION_COORD.clear(); STATION_NAME.clear()
+    TRAIN_DAYS.clear(); TRAIN_CLASSES.clear()
     TRAIN_NAME.update(trains)
     TRAIN_DAYS.update(train_days or {})
     TRAIN_CLASSES.update(train_classes or {})
@@ -63,6 +65,7 @@ def _populate(trains, stations, train_stops, station_idx, hub_trains, train_days
     HUB_TRAINS.update(hub_trains)
     for code, _name, lat, lng, _n in stations:
         STATION_COORD[code] = [lng, lat]
+        STATION_NAME[code] = _name
 
 
 def _load_from_db(attempts=3):
@@ -161,6 +164,55 @@ def _haversine_km(lat1, lng1, lat2, lng2):
     dl = math.radians(lng2 - lng1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return r * 2 * math.asin(math.sqrt(a))
+
+
+def station_suggestions(q, limit=5):
+    """Station names matching a prefix (then substring), busiest first — so
+    any place with a railway station is searchable, not just GeoNames cities."""
+    q = q.strip().lower()
+    if len(q) < 2:
+        return []
+    pref, cont = [], []
+    for _code, name, _lat, _lng, n in STATIONS:
+        if n <= 0:
+            continue
+        low = name.lower()
+        if low.startswith(q):
+            pref.append((n, name))
+        elif q in low:
+            cont.append((n, name))
+    pref.sort(key=lambda x: -x[0])
+    cont.sort(key=lambda x: -x[0])
+    seen, out = set(), []
+    for _n, name in pref + cont:
+        k = name.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(name)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def station_geocode(q):
+    """(name, lat, lng) for the best station matching q — exact > prefix >
+    substring, then busiest. Lets the engine route from any station-town even
+    if it's absent from the city gazetteer (e.g. Ringas)."""
+    q = q.strip().lower()
+    if len(q) < 2:
+        return None
+    best = None
+    for _code, name, lat, lng, n in STATIONS:
+        if n <= 0:
+            continue
+        low = name.lower()
+        score = 3 if low == q else 2 if low.startswith(q) else 1 if q in low else 0
+        if score == 0:
+            continue
+        cand = (score, n, name, lat, lng)
+        if best is None or (cand[0], cand[1]) > (best[0], best[1]):
+            best = cand
+    return (best[2], best[3], best[4]) if best else None
 
 
 def nearest_railheads(lat, lng, radius_km):

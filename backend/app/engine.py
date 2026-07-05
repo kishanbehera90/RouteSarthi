@@ -16,8 +16,10 @@ from .db import get_pool
 # --- tunables -------------------------------------------------------------
 ORIGIN_RADIUS_KM = 200
 DEST_RADIUS_KM = 60
-ROAD_KMPH = 35
+ROAD_KMPH = 40
 ROAD_FARE_PER_KM = 3.0
+ROAD_ROUTE_FACTOR = 1.3    # road distance vs straight-line
+ROAD_DIRECT_MAX_KM = 500   # offer a direct-road option up to this (else rail/flight)
 RAIL_KMPH_PROXY = 50      # minutes -> km fallback when a station has no coords
 
 # Fare rates calibrated from IRCTC Oct-2023 price_data.csv — median baseFare/km
@@ -92,6 +94,19 @@ def connection_safety(buffer_mins):
 
 _GEOCODE_CACHE = {}
 
+# Well-known places whose common spelling differs from the gazetteer's.
+PLACE_ALIASES = {
+    "kanyakumari": "kanniyakumari", "kanya kumari": "kanniyakumari",
+    "banaras": "varanasi", "benares": "varanasi", "calcutta": "kolkata",
+    "bombay": "mumbai", "madras": "chennai", "bangalore": "bengaluru",
+    "pondicherry": "puducherry", "trivandrum": "thiruvananthapuram",
+    "cochin": "kochi", "gauhati": "guwahati", "poona": "pune",
+}
+
+
+def _alias(name):
+    return PLACE_ALIASES.get(name.strip().lower(), name)
+
 # GeoNames IN admin1 code -> state. Derived from our own gazetteer (top city
 # per code, verified against capitals) — the published mapping is stale.
 IN_STATES = {
@@ -128,6 +143,14 @@ def _geocode(cur, name):
     k = (name.lower(), state_hint)
     if k in _GEOCODE_CACHE:
         return _GEOCODE_CACHE[k]
+    # The user explicitly picked a railway-station suggestion — resolve it as a
+    # station, not a same-named city elsewhere (fixes "wrong Khatu").
+    if state_hint == "railway station":
+        row = graph.station_geocode(name)
+        if len(_GEOCODE_CACHE) < 5000:
+            _GEOCODE_CACHE[k] = row
+        return row
+    name = _alias(name)  # famous-place spellings (Kanyakumari -> Kanniyakumari)
     cur.execute(
         """SELECT name, lat, lng, admin1 FROM cities
            WHERE lower(asciiname)=lower(%s) OR lower(name)=lower(%s)
@@ -147,6 +170,9 @@ def _geocode(cur, name):
     if row is None:
         row = cands[0] if cands else None
     row = row[:3] if row else None
+    if row is None:
+        # Not a gazetteer city — try the railway-station index (Ringas Jn etc.).
+        row = graph.station_geocode(name)
     if len(_GEOCODE_CACHE) < 5000:
         _GEOCODE_CACHE[k] = row
     return row
@@ -173,13 +199,31 @@ def _ac_available(*train_nos):
     return bool(cls & _AC_CLASSES)
 
 
-def _fare_rail(tn, bcode, acode, in_train_min):
-    """Distance x calibrated per-class rate. Class = cheapest the train offers
-    (SL where available, else 3A/CC — e.g. Rajdhani/Tejas have no SL)."""
+# Human labels for the coach classes we price.
+CLASS_LABEL = {"SL": "Sleeper", "3A": "AC 3-tier", "2A": "AC 2-tier", "1A": "AC First",
+               "CC": "Chair Car", "2S": "Second sitting"}
+CLASS_ORDER = ["2S", "SL", "CC", "3A", "2A", "1A"]
+
+
+def _class_fares(tn, bcode, acode, in_train_min):
+    """Per-class fares for the classes this train actually offers, cheapest
+    first: [{code, label, fareInr}]."""
     km = _rail_km(bcode, acode, in_train_min)
-    classes = graph.TRAIN_CLASSES.get(tn, "")
-    cls = "SL" if "SL" in classes else "3A" if "3A" in classes else "CC" if "CC" in classes else "SL"
-    return max(60, round(km * FARE_RATE[cls] + RESV_CHARGE))
+    have = {x.strip() for x in graph.TRAIN_CLASSES.get(tn, "").split(",")}
+    out = []
+    for c in CLASS_ORDER:
+        if c in have and c in FARE_RATE:
+            out.append({"code": c, "label": CLASS_LABEL[c],
+                        "fareInr": max(60, round(km * FARE_RATE[c] + RESV_CHARGE))})
+    if not out:  # trains with unknown/other classes -> a sleeper-rate estimate
+        out.append({"code": "SL", "label": CLASS_LABEL["SL"],
+                    "fareInr": max(60, round(km * FARE_RATE["SL"] + RESV_CHARGE))})
+    return sorted(out, key=lambda x: x["fareInr"])
+
+
+def _fare_rail(tn, bcode, acode, in_train_min):
+    """Cheapest available class — the headline fare for a leg."""
+    return _class_fares(tn, bcode, acode, in_train_min)[0]["fareInr"]
 
 
 def _road_leg(idx, frm, to, km, fromc=None, toc=None):
@@ -195,6 +239,21 @@ def _coord(node):
     return [node["lng"], node["lat"]]
 
 
+def _useful(b, a, ocoord, dcoord):
+    """A rail leg must make geographic sense: alight CLOSER to the destination
+    than the board, and FARTHER from the origin. Kills backtracking nonsense
+    (e.g. Ringas → cab to Jaipur → train back to Ringas → cab to Salasar)."""
+    if None in (b.get("lat"), a.get("lat")) or not ocoord or not dcoord:
+        return True  # can't judge without coords — don't over-filter
+    hav = graph._haversine_km
+    o_lat, o_lng, d_lat, d_lng = ocoord[1], ocoord[0], dcoord[1], dcoord[0]
+    b_to_d = hav(b["lat"], b["lng"], d_lat, d_lng)
+    a_to_d = hav(a["lat"], a["lng"], d_lat, d_lng)
+    b_to_o = hav(b["lat"], b["lng"], o_lat, o_lng)
+    a_to_o = hav(a["lat"], a["lng"], o_lat, o_lng)
+    return a_to_d < b_to_d - 5 and a_to_o > b_to_o - 5
+
+
 def _hub_coord(code):
     return graph.STATION_COORD.get(code)
 
@@ -208,6 +267,36 @@ def _path_coords(codes):
         if p and (not out or out[-1] != p):
             out.append(p)
     return out if len(out) >= 2 else None
+
+
+_DAY_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+_DAY_SHORT = {"MON": "Mon", "TUE": "Tue", "WED": "Wed", "THU": "Thu",
+              "FRI": "Fri", "SAT": "Sat", "SUN": "Sun"}
+
+
+def _days_label(tn):
+    """'Daily' / 'Mon, Wed, Fri' / None (unknown)."""
+    d = graph.TRAIN_DAYS.get(tn, "")
+    if not d:
+        return None
+    days = [x.strip() for x in d.split(",") if x.strip()]
+    if len(days) == 7:
+        return "Daily"
+    return ", ".join(_DAY_SHORT.get(x, x) for x in _DAY_ORDER if x in days)
+
+
+def _path_stops(codes):
+    """Station names along a train leg (for the 'all stops' expander)."""
+    names = [graph.STATION_NAME.get(c, c) for c in (codes or [])]
+    return names if len(names) >= 2 else None
+
+
+def _route_classes(*train_nos):
+    """Union of coach classes across a route's trains, in fare order."""
+    have = set()
+    for tn in train_nos:
+        have.update(x.strip() for x in graph.TRAIN_CLASSES.get(tn, "").split(",") if x.strip())
+    return [c for c in CLASS_ORDER if c in have] + sorted(have - set(CLASS_ORDER))
 
 
 def _breakdown_direct(trains, first_km):
@@ -265,6 +354,8 @@ def search(from_place, to_place, pref="confirmed", date=None):
     best_by_train = {}
     for c in graph.single_train(o_heads, d_heads, day3):
         b, a = o_heads[c["board"]], d_heads[c["alight"]]
+        if not _useful(b, a, ocoord, dcoord):
+            continue
         access = b["km"] + a["km"]
         if c["train"] not in best_by_train or access < best_by_train[c["train"]][0]:
             best_by_train[c["train"]] = (access, c)
@@ -274,9 +365,23 @@ def search(from_place, to_place, pref="confirmed", date=None):
     # --- one-transfer cross-origin (when few/no through trains) ---
     if len(routes) < 3:
         for j in graph.one_transfer(o_heads, d_heads, day3):
-            routes.append(_transfer_route(from_place, to_place, o_heads[j["board"]], d_heads[j["alight"]], j, ocoord, dcoord))
+            b, a = o_heads[j["board"]], d_heads[j["alight"]]
+            if not _useful(b, a, ocoord, dcoord):
+                continue
+            routes.append(_transfer_route(from_place, to_place, b, a, j, ocoord, dcoord))
 
-    routes = _diversify(_rank(routes, pref))[:16]
+    # --- direct road option (multi-modal): often best for short/poorly-railed
+    # trips. Offered up to a sane distance, or whenever rail found nothing. ---
+    straight_km = graph._haversine_km(o[1], o[2], d[1], d[2])
+    if straight_km * ROAD_ROUTE_FACTOR <= ROAD_DIRECT_MAX_KM or not routes:
+        routes.append(_road_route(from_place, to_place, ocoord, dcoord))
+
+    # Always keep the road option visible (ranked in its rightful place), even
+    # when many trains would otherwise crowd it out of the top slots.
+    ranked = _diversify(_rank(routes, pref))
+    road = [r for r in ranked if r.get("roadOnly")]
+    rail = [r for r in ranked if not r.get("roadOnly")][:15]
+    routes = _rank(rail + road, pref)[:16]
     # Plan B: each route's fallback is the next-ranked alternative.
     for i, r in enumerate(routes):
         nxt = routes[i + 1] if i + 1 < len(routes) else None
@@ -399,11 +504,16 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord):
         legs.append(_road_leg(f"{c['train']}-fm", frm, b["name"], first_km, ocoord, bc))
         legs.append({"id": f"{c['train']}-c1", "mode": "connection", "connectionSafetyPct": None,
                      "bufferMins": None, "note": f"~{round(first_km)} km road to {b['name']}"})
-    legs.append({"id": f"{c['train']}-tr", "mode": "train", "name": f"{c['train']} {c['name'] or ''}".strip(),
+    train_leg = {"id": f"{c['train']}-tr", "mode": "train", "trainNo": c["train"],
+                 "name": f"{c['train']} {c['name'] or ''}".strip(),
                  "from": b["name"], "to": a["name"], "depart": _hhmm(c["dep"]), "arrive": _hhmm(c["arr"]),
-                 "durationMins": c["in_train"], "fareInr": _fare_rail(c["train"], b["code"], a["code"], c["in_train"]), "confirmation": "confirmed",
+                 "durationMins": c["in_train"],
+                 "classFares": _class_fares(c["train"], b["code"], a["code"], c["in_train"]),
+                 "fareInr": _fare_rail(c["train"], b["code"], a["code"], c["in_train"]), "confirmation": "confirmed",
                  "fromCoords": bc, "toCoords": ac, "pathCoords": _path_coords(c.get("path")),
-                 "halts": len(c.get("path") or []) - 2 if c.get("path") else None})
+                 "days": _days_label(c["train"]), "stops": _path_stops(c.get("path")),
+                 "halts": len(c.get("path") or []) - 2 if c.get("path") else None}
+    legs.append(train_leg)
     if last_km > 2:
         legs.append({"id": f"{c['train']}-c2", "mode": "connection", "connectionSafetyPct": None,
                      "bufferMins": None, "note": f"~{round(last_km)} km road to {to}"})
@@ -422,7 +532,12 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord):
         "hub": {"code": b["code"], "name": b["name"]} if is_cross else None,
         "boardTrains": b["trains"], "transfers": 0,
         "acAvailable": _ac_available(c["train"]),
-        "classes": graph.TRAIN_CLASSES.get(c["train"], ""),
+        "classes": _route_classes(c["train"]),
+        "mainTrain": {"trainNo": c["train"], "name": c["name"] or c["train"],
+                      "from": b["name"], "to": a["name"],
+                      "depart": _hhmm(c["dep"]), "arrive": _hhmm(c["arr"]),
+                      "days": _days_label(c["train"]), "halts": train_leg["halts"],
+                      "classFares": train_leg["classFares"]},
         "reliabilityBreakdown": _breakdown_direct(b["trains"], first_km),
         "why": (f"{b['name']} ({round(first_km)} km away) is a far better-connected railhead "
                 f"with {b['trains']} trains/day — boarding there beats the limited local options."
@@ -441,19 +556,27 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord):
         legs.append(_road_leg(f"{j['t1']}-fm", frm, b["name"], first_km, ocoord, bc))
         legs.append({"id": f"{j['t1']}-c0", "mode": "connection", "connectionSafetyPct": None,
                      "bufferMins": None, "note": f"~{round(first_km)} km road to {b['name']}"})
-    legs.append({"id": f"{j['t1']}-tr", "mode": "train", "name": f"{j['t1']} {j['t1name'] or ''}".strip(),
-                 "from": b["name"], "to": j["hub"], "depart": _hhmm(j["dep1"]),
-                 "arrive": _hhmm(j["arr1"]) if j.get("arr1") is not None else None,
-                 "durationMins": j["it1"], "fareInr": _fare_rail(j["t1"], b["code"], j["hub"], j["it1"]), "confirmation": "confirmed",
-                 "fromCoords": bc, "toCoords": hc, "pathCoords": _path_coords(j.get("path1"))})
+    leg1 = {"id": f"{j['t1']}-tr", "mode": "train", "trainNo": j["t1"], "name": f"{j['t1']} {j['t1name'] or ''}".strip(),
+            "from": b["name"], "to": j["hub"], "depart": _hhmm(j["dep1"]),
+            "arrive": _hhmm(j["arr1"]) if j.get("arr1") is not None else None,
+            "durationMins": j["it1"], "classFares": _class_fares(j["t1"], b["code"], j["hub"], j["it1"]),
+            "fareInr": _fare_rail(j["t1"], b["code"], j["hub"], j["it1"]), "confirmation": "confirmed",
+            "fromCoords": bc, "toCoords": hc, "pathCoords": _path_coords(j.get("path1")),
+            "days": _days_label(j["t1"]), "stops": _path_stops(j.get("path1")),
+            "halts": len(j.get("path1") or []) - 2 if j.get("path1") else None}
+    legs.append(leg1)
     safety = connection_safety(j["wait"])
     legs.append({"id": f"{j['t1']}-{j['t2']}-cx", "mode": "connection", "connectionSafetyPct": safety,
                  "bufferMins": j["wait"],
                  "note": f"Change at {j['hub']} ({j['hub_trains']} trains/day) · {j['wait']} min connection"})
-    legs.append({"id": f"{j['t2']}-tr", "mode": "train", "name": f"{j['t2']} {j['t2name'] or ''}".strip(),
-                 "from": j["hub"], "to": a["name"], "depart": _hhmm(j["dep2"]), "arrive": _hhmm(j["arr2"]),
-                 "durationMins": j["it2"], "fareInr": _fare_rail(j["t2"], j["hub"], a["code"], j["it2"]), "confirmation": "confirmed",
-                 "fromCoords": hc, "toCoords": ac, "pathCoords": _path_coords(j.get("path2"))})
+    leg2 = {"id": f"{j['t2']}-tr", "mode": "train", "trainNo": j["t2"], "name": f"{j['t2']} {j['t2name'] or ''}".strip(),
+            "from": j["hub"], "to": a["name"], "depart": _hhmm(j["dep2"]), "arrive": _hhmm(j["arr2"]),
+            "durationMins": j["it2"], "classFares": _class_fares(j["t2"], j["hub"], a["code"], j["it2"]),
+            "fareInr": _fare_rail(j["t2"], j["hub"], a["code"], j["it2"]), "confirmation": "confirmed",
+            "fromCoords": hc, "toCoords": ac, "pathCoords": _path_coords(j.get("path2")),
+            "days": _days_label(j["t2"]), "stops": _path_stops(j.get("path2")),
+            "halts": len(j.get("path2") or []) - 2 if j.get("path2") else None}
+    legs.append(leg2)
     if last_km > 2:
         legs.append({"id": f"{j['t2']}-c2", "mode": "connection", "connectionSafetyPct": None,
                      "bufferMins": None, "note": f"~{round(last_km)} km road to {to}"})
@@ -473,10 +596,45 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord):
         "confirmation": "confirmed", "confirmationPct": None, "clearProbabilityPct": None,
         "hub": {"code": j["hub"], "name": j["hub"]}, "boardTrains": j["hub_trains"], "transfers": 1,
         "acAvailable": _ac_available(j["t1"], j["t2"]),
+        "classes": _route_classes(j["t1"], j["t2"]),
+        "mainTrain": (lambda m: {"trainNo": m["trainNo"], "name": m["name"], "from": m["from"],
+                                 "to": m["to"], "depart": m["depart"], "arrive": m["arrive"],
+                                 "days": m.get("days"), "halts": m.get("halts"),
+                                 "classFares": m["classFares"]})(leg1 if j["it1"] >= j["it2"] else leg2),
         "reliabilityBreakdown": _breakdown_transfer(j["hub_trains"], safety, first_km),
         "why": (f"No through train — but {j['hub']} ({j['hub_trains']} trains/day) links the two "
                 f"sides with a {j['wait']}-min connection."),
         "planB": None, "legs": legs,
+    }
+
+
+def _slug(s):
+    return "".join(ch if ch.isalnum() else "_" for ch in s.lower())[:24]
+
+
+def _road_route(frm, to, ocoord, dcoord):
+    """A direct door-to-door road option (cab/bus). For a travel planner this
+    is often the best answer for short hops or poorly-railed pairs — it competes
+    with the rail routes and wins on time when it deserves to."""
+    km = graph._haversine_km(ocoord[1], ocoord[0], dcoord[1], dcoord[0]) * ROAD_ROUTE_FACTOR
+    dur = max(15, round(km / ROAD_KMPH * 60))
+    leg = _road_leg("roaddirect", frm, to, km, ocoord, dcoord)
+    leg["name"] = f"Road · {frm} → {to}"
+    return {
+        "id": f"road-{_slug(frm)}-{_slug(to)}",
+        "type": "direct", "totalTimeMins": dur, "totalFareInr": leg["fareInr"],
+        "reliability": 68, "confirmation": "confirmed", "confirmationPct": None,
+        "clearProbabilityPct": None, "hub": None, "transfers": 0, "roadOnly": True,
+        "classes": [], "acAvailable": None, "mainTrain": None,
+        "reliabilityBreakdown": [
+            {"label": "No transfers", "value": 100},
+            {"label": "Always available", "value": 90},
+            {"label": "Door to door", "value": 95},
+        ],
+        "why": (f"Direct road (~{round(km)} km, ~{dur // 60}h {dur % 60:02d}m by cab or bus) — "
+                f"usually the quickest door-to-door for shorter trips or where there's no "
+                f"good direct train."),
+        "planB": None, "legs": [leg],
     }
 
 

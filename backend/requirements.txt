@@ -22,3 +22,6 @@ psycopg-pool>=3.2
 # geopandas>=1.0
 # scikit-learn>=1.5
 # lightgbm>=4.5
+
+# --- Tests ---
+pytest>=8.0

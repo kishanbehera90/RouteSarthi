@@ -20,8 +20,12 @@ day one** via a data collector. Everything below follows from this.
 
 ## 2. Locked decisions (the strategy)
 
-- **Modes (v1): trains-first.** Full train routing + cross-origin; buses/cabs
-  only as first/last-mile road legs. (Rail data is open; bus data isn't.)
+- **Modes (v1): multi-modal, rail-rich.** RouteSarthi is a *travel planner*,
+  not a train app: it compares **direct road (cab/bus)** against rail and picks
+  the best per trip — road wins short/poorly-railed hops, rail wins the rest.
+  Rail is the deepest layer (open data); road legs use a straight-line×1.3
+  heuristic now, real OSRM later. *(Revised 2026-07-05 — was "trains-first";
+  a direct-road option that competes on time/cost is now core.)*
 - **Data budget: strictly free / open only (₹0).** No paid API. We build our
   own collector instead.
 - **City coverage: every city — Census 2011 towns (~8,000)** with coordinates,
@@ -194,6 +198,68 @@ it "real ML" stays theoretical; with it, our dataset compounds into the moat.
   `VITE_USE_REAL_API=true`).
 
 ---
+
+## 9b. Step 2+3 execution plan (locked 2026-07-04)
+
+**Goal:** replace the three heuristic trust numbers — `reliability`,
+`connectionSafetyPct`, per-leg `delayProfile` — with values computed from
+historical delay data. The UI already renders all three (contract fields
+exist since Phase A), so this is backend-only + instant visual payoff.
+
+**Order (respects dependencies):**
+0. **Commit current work first** — two days of data-layer work is unpushed.
+1. **Pytest suite** (`backend/tests/`) — lock Step 1 before changing scoring:
+   contract shapes, flagship corridors return routes, direct-vs-cross-origin
+   reasoning modes, fares within sane bands, weekday filter, geocode
+   disambiguation cases (Gorakhpur), `_rebuild_direct`. Run via
+   `.venv/Scripts/python -m pytest` with the API in-process (httpx/TestClient,
+   no server needed). Benchmark stays the duration acceptance test.
+2. **Delay data in** (user task): download the two Kaggle delay sets
+   (naijilaji 2025 scrape; vishwassrivastava1) into
+   `data/raw/candidates/delays/`. Vet on the page: columns must include train
+   number + delay minutes (+ ideally station & date); note licence + rows.
+3. **`etl/load_delays.py`** → new `train_delays` table:
+   `(train_number, n_obs, avg_delay, p50, p80, p90, on_time_pct, source,
+   as_of)` — per-train aggregate first (per-station later if data supports).
+   Reuse `CODE_RENAMES`/number hygiene; expect old numbers → match rate
+   reported like the station audit; unmatched trains keep priors.
+3b. **Fare accuracy (folded into Step 3 — locked 2026-07-05).** Current fares
+   use haversine×1.25 distance × a linear per-class rate — a rough average
+   (telescopic reality makes long trips cheaper/km; misses superfast, catering
+   on Rajdhani/Duronto, GST on AC). Fix: (a) use **real per-stop cumulative
+   km** already in the datasets (fresh-2026 end-to-end `distance`; irctc-2023
+   `stationList[].distance`) → store cumulative distance per stop, compute
+   exact segment km; (b) **fit fares from the 124 MB IRCTC-2023
+   `price_data.csv`** — real `totalFare` by train×class×distance → a lookup /
+   light regression per class + train-type, so fares match IRCTC within a few
+   rupees instead of ±15%. Deliver alongside the delay ETL (same "load a big
+   CSV, aggregate, wire into the leg builder" shape).
+4. **Engine wiring:**
+   - `delayProfile {avgMins, onTimePct}` on every train leg (measured when
+     available, else a labelled **class prior**: premium 12xxx/22xxx ≈ 75-85%
+     on-time, mail/express ≈ 60-75%, passenger ≈ 50-65% — calibrated to the
+     measured distribution so priors aren't invented).
+   - `connectionSafetyPct` = P(incoming delay < buffer) from the incoming
+     train's p50/p80/p90 (piecewise-linear empirical CDF), replacing the
+     logistic prior.
+   - `reliability` composite = f(legs' on-time %, connection safety,
+     connectivity, first-mile); `reliabilityBreakdown` gains "On-time record".
+   - Every route notes `delaySource: measured | prior` (honesty in UI later).
+5. **Verify:** pytest green, benchmark unchanged, flagship corridors show
+   real on-time bars in the browser; log before/after coverage (% legs with
+   measured data).
+6. **Step 2 skeleton — `etl/collect_status.py`:** pluggable provider
+   interface with a HARD budget guard (RapidAPI free = ~10 calls/mo → useful
+   only for spot checks; document indianrailapi free key as the candidate
+   daily provider — user registers, we test). Collector writes raw snapshots
+   to `status_snapshots`; even 20 trains/day compounds into our own delay
+   distribution. Cron/scheduling = friend's task when he's back (or Windows
+   Task Scheduler locally).
+7. **Parallel (grindy, any time):** station-alias expansion 7.9% → <3%.
+
+**Risks:** Kaggle delay sets may cover few trains / stale numbers (match rate
+will tell us — measure before trusting); delays vary by station along the
+route (v1 uses end-of-run aggregates, per-station later via collector).
 
 ## 10. Sources (quick index)
 

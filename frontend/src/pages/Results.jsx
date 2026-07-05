@@ -55,9 +55,21 @@ export default function Results() {
         const lastLeg = arriving[arriving.length - 1]
         if (lastLeg && isLateNightTime(lastLeg.arrive)) return false
       }
+      if (filters.travelClass && Array.isArray(r.classes) && !r.classes.includes(filters.travelClass)) return false
       return true
     })
   }, [state.routes, filters])
+
+  // Tag the single cheapest / fastest option among the visible set.
+  const tags = useMemo(() => {
+    if (!visibleRoutes.length) return {}
+    const cheapest = visibleRoutes.reduce((a, b) => (b.totalFareInr < a.totalFareInr ? b : a))
+    const fastest = visibleRoutes.reduce((a, b) => (b.totalTimeMins < a.totalTimeMins ? b : a))
+    const t = {}
+    t[cheapest.id] = 'Cheapest'
+    t[fastest.id] = t[fastest.id] ? 'Cheapest & fastest' : 'Fastest'
+    return t
+  }, [visibleRoutes])
 
   const shownRoutes = showAll ? visibleRoutes : visibleRoutes.slice(0, 6)
 
@@ -173,7 +185,7 @@ export default function Results() {
               <p className="text-sm text-faint sm:col-span-2">No routes match your filters — try relaxing one.</p>
             )}
             {shownRoutes.map((route, i) => (
-              <RouteCard key={route.id} route={route} index={i} />
+              <RouteCard key={route.id} route={route} index={i} tag={tags[route.id]} />
             ))}
           </div>
 

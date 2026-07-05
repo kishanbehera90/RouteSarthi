@@ -263,6 +263,9 @@ POST = [
     "UPDATE stations SET num_trains = 0 WHERE code NOT IN (SELECT DISTINCT station_code FROM stops);",
     "CREATE INDEX stops_train_idx ON stops (train_number, seq);",
     "CREATE INDEX stops_station_idx ON stops (station_code);",
+    # Fuzzy city search (Kanyakumari ~ Kanniyakumari) — pg_trgm + GIN index.
+    "CREATE EXTENSION IF NOT EXISTS pg_trgm;",
+    "CREATE INDEX IF NOT EXISTS cities_name_trgm ON cities USING gin (lower(name) gin_trgm_ops);",
     "ANALYZE stops; ANALYZE trains; ANALYZE stations;",
 ]
 

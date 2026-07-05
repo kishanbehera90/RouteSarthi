@@ -192,6 +192,24 @@ export default function RouteMap({ legs, className = '', live = false, liveProgr
       applyBrandTint(map)
 
       // Faint full "planned" path under the animated line.
+      // India's official national boundary (datameet, simplified to 43KB) drawn
+      // over the OSM tiles — asserts the correct border for J&K/Ladakh/Arunachal
+      // instead of OSM's "on-the-ground" disputed lines.
+      fetch('/india-boundary.json')
+        .then((r) => r.json())
+        .then((geo) => {
+          if (!map.getSource('india-border')) {
+            map.addSource('india-border', { type: 'geojson', data: geo })
+            map.addLayer({
+              id: 'india-border',
+              type: 'line',
+              source: 'india-border',
+              paint: { 'line-color': '#5b6fd0', 'line-width': 1.3, 'line-opacity': 0.55 },
+            })
+          }
+        })
+        .catch(() => {})
+
       map.addSource('route-bg', {
         type: 'geojson',
         data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } },

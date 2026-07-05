@@ -1,12 +1,14 @@
-"""Load the rail network + city gazetteer into Postgres/PostGIS.
+"""[DEPRECATED — superseded by load_v2.py] Original datameet-2016 ETL.
 
-Run from the backend/ directory (so .env + data/ paths resolve):
-    python etl/load_all.py
+DO NOT RUN THIS to rebuild the live DB. It creates a `trains` table WITHOUT the
+`days_of_week`/`classes` columns that app/graph.py now requires — running it
+would drop those and break the engine at startup. Use `etl/load_v2.py` (the
+current May-2026 timetable + IRCTC-2023 gap-fill). Kept only for historical
+reference / the stations+cities loading logic reused elsewhere.
 
-Idempotent-ish: drops and recreates the four tables each run.
-Sources (downloaded into data/raw/ — gitignored):
-  - stations.json, schedules.json  (datameet/railways, CC0)
-  - IN.txt                          (GeoNames India, CC-BY; feature class 'P')
+Original purpose: load the rail network + city gazetteer into Postgres/PostGIS.
+Sources (data/raw/, gitignored): stations.json, schedules.json (datameet CC0);
+IN.txt (GeoNames India, CC-BY).
 """
 import json
 import os
@@ -145,4 +147,8 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+    if "--force-deprecated" not in sys.argv:
+        sys.exit("REFUSED: load_all.py is deprecated and would break the current "
+                 "schema. Use `python etl/load_v2.py`. (Override: --force-deprecated)")
     main()

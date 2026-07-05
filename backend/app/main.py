@@ -111,25 +111,51 @@ def suggest_places(q: str = ""):
         return {"places": []}
     try:
         from .db import get_pool
-        from .engine import IN_STATES
-        with get_pool().connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """SELECT name, admin1, population FROM cities
-                   WHERE lower(name) LIKE %s OR lower(asciiname) LIKE %s
-                   ORDER BY population DESC NULLS LAST LIMIT 12;""",
-                (q + "%", q + "%"),
-            )
-            out, seen = [], set()
-            for name, admin1, _pop in cur.fetchall():
-                state = IN_STATES.get(admin1, "")
-                key = (name.lower(), state)
-                if key in seen:
-                    continue
+        from .engine import IN_STATES, _alias
+        qa = _alias(q)  # famous-place spelling (kanyakumari -> kanniyakumari)
+        out, seen = [], set()
+
+        def add(name, state):
+            # Key on (name, state) so two same-named cities in different states
+            # both surface (Gorakhpur UP vs Haryana) — that's the disambiguation.
+            key = (name.lower(), state)
+            if key not in seen:
                 seen.add(key)
                 out.append({"name": name, "state": state})
-                if len(out) >= 8:
-                    break
-        return {"places": out}
+
+        # 1) Cities/towns first — this is a travel planner: show every place
+        #    with its state (prefix match, then a trigram fuzzy fallback).
+        with get_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT name, admin1 FROM cities
+                   WHERE lower(name) LIKE %s OR lower(asciiname) LIKE %s
+                   ORDER BY population DESC NULLS LAST LIMIT 10;""",
+                (qa + "%", qa + "%"),
+            )
+            for name, admin1 in cur.fetchall():
+                add(name, IN_STATES.get(admin1, ""))
+            if len(out) < 8:
+                cur.execute(
+                    """SELECT name, admin1 FROM cities
+                       WHERE similarity(lower(name), %s) > 0.45
+                       ORDER BY similarity(lower(name), %s) DESC, population DESC NULLS LAST
+                       LIMIT 6;""",
+                    (qa, qa),
+                )
+                for name, admin1 in cur.fetchall():
+                    add(name, IN_STATES.get(admin1, ""))
+            # Station-towns the gazetteer misses (e.g. Ringas) — with real state,
+            # so they read as places, not "railway stations".
+            if len(out) < 8:
+                cur.execute(
+                    """SELECT name, state FROM stations
+                       WHERE lower(name) LIKE %s AND num_trains > 0
+                       ORDER BY num_trains DESC LIMIT 6;""",
+                    (q + "%",),
+                )
+                for name, state in cur.fetchall():
+                    add(name, state or "")
+        return {"places": out[:8]}
     except Exception as e:  # noqa: BLE001
         print("places suggest unavailable:", e)
         return {"places": []}

@@ -209,6 +209,118 @@ must be set to `frontend/`.)
 ---
 
 ## Changelog
+- **2026-07-05 (product reframe: multi-modal + cities-first)** — user
+  correction: RouteSarthi is a **travel planner, not a train app**.
+  - **Direct road option added** (`_road_route`): a door-to-door cab/bus leg
+    that competes with rail and is always shown (ranked in place) up to 500 km
+    or whenever rail finds nothing. Verified: Ringas→Salasar road is #1 fastest
+    (2h59 vs 4h11 rail); Delhi→Jaipur shows road but train wins; Delhi→Mumbai
+    (>500km) shows no road. RouteCard renders road-only routes as "Direct by
+    road (cab or bus)". `ROAD_KMPH` 35→40.
+  - **Autocomplete flipped to cities-first, by state** — every city shows with
+    its state; the "Railway station" label is gone (station-towns the gazetteer
+    misses, e.g. Ringas, now fill remaining slots with their **real state**).
+  - PHASE_B_PLAN §2 "trains-first" decision revised to multi-modal. pytest
+    **17/17** (added road-option + cities-first tests). Known: road detail
+    links reset on restart (like transfers — Redis at deploy); road distance is
+    straight-line×1.3 until OSRM.
+- **2026-07-05 (backtracking fix + search relevance + India map)** — all
+  user-caught:
+  - **Backtracking routes killed (P12):** Ringas→Salasar rode a train back to
+    Ringas. Added `_useful()` progress filter (rail leg must end nearer dest +
+    farther from origin) on direct + transfer candidates. Regression test added.
+  - **"Wrong Khatu":** picking a station suggestion (state="Railway station")
+    now geocodes via the station index, not a same-named city elsewhere.
+  - **Autocomplete relevance:** railway stations listed FIRST (train app),
+    then cities; dedup keyed on (name, state) so both Gorakhpurs surface.
+  - **Kanyakumari etc.:** `PLACE_ALIASES` map (Kanyakumari→Kanniyakumari,
+    Banaras→Varanasi, Bombay→Mumbai…) + **pg_trgm fuzzy** fallback for other
+    misspellings (extension + GIN index; added to load_v2 for rebuilds).
+  - **Running days** confirmed multi-day (Sun+Tue → "Tue, Sun").
+  - **India map (Option B done):** OSM shows disputed J&K/Ladakh/Arunachal
+    borders. Downloaded datameet's India-official boundary (10.7MB), simplified
+    it pure-Python to a **43KB** MultiLineString, shipped as
+    `frontend/public/india-boundary.json`, overlaid as a subtle brand-colour
+    national border line in RouteMap (lazy fetch, graceful fallback). No
+    external dep, no state-border clutter. *(Mappls tiles remain the eventual
+    "even better" option if a request-capped key is acceptable.)*
+  - **load_all.py** hard-guarded as deprecated (breaks current schema).
+  - pytest **16/16**, frontend lint+build clean. Verified via live dev server.
+- **2026-07-05 (station-wide search + pricing→Step 3)** —
+  - **Every railway station is now searchable/routable**, not just GeoNames
+    cities. Root cause: geocode + autocomplete only hit the `cities` table, so
+    station-towns absent from GeoNames (Ringas Jn — 64 trains!, Khatu, …)
+    returned nothing. Added `graph.station_suggestions` + `graph.station_geocode`
+    (in-memory over the 8.7k stations); `/api/places` now merges up to 6 cities
+    + 4 stations (labelled "Railway station"); `_geocode` falls back to the
+    station index when a city lookup misses. Verified: "Ringas" autocompletes
+    to Ringas Junction and Ringas→Jaipur now returns 16 routes (was 0).
+    *Correctly still unroutable:* Leh/Ladakh (no railway exists there — right
+    behaviour for a rail app). *Known residual:* Kanyakumari absent from this
+    dataset's stations (a coverage gap, not a search bug) — revisit with the
+    station-alias/coverage grind.
+  - **Running-days confirmed multi-day:** a Sun+Tue train shows "Tue, Sun"
+    (verified train 00961 → "Mon, Tue, Thu, Fri").
+  - **Fare accuracy moved into Step 3** (PHASE_B_PLAN §9b step 3b): real
+    per-stop cumulative km + fares fitted from the IRCTC-2023 `price_data.csv`.
+  - **Map (permanent fix) — decision pending user:** OpenFreeMap/OSM shows
+    J&K/Ladakh/Arunachal with disputed borders. Two permanent fixes documented
+    for the user to choose (both need a key or a decision): Mappls dev tiles,
+    or an official-boundary GeoJSON overlay. pytest 14/14 green throughout.
+- **2026-07-04 (4 UX adds + audit + docs)** —
+  - **4 UX features shipped:** (1) **Cheapest/Fastest tag** on the best card
+    (computed client-side over the visible set); (2) **running days** on cards
+    + itinerary ("Daily" / "Mon, Wed, Fri" from `days_of_week`); (3) **class
+    filter** — Sleeper/3A/2A/… dropdown filters routes by real `classes`
+    (route now carries a `classes` union); (4) **halts + "view all N stops"**
+    expander per train leg (`stops` = station names along the path, `halts`
+    count). Backend adds `graph.STATION_NAME`, `_days_label`, `_path_stops`,
+    `_route_classes`. Verified in-browser + pytest 14/14 green.
+  - **File audit (no deletions per user):** codebase clean; only footgun found
+    is **`etl/load_all.py`** — its `trains` table lacks the `days_of_week`/
+    `classes` columns `graph.py` now needs, so running it would break the
+    engine. Marked DEPRECATED with a hard `--force-deprecated` guard; use
+    `load_v2.py`. `models.py` (contract schema), `seed.py` (fallback),
+    mock data (empty states/map fallback), docker-compose (future infra) all
+    intentionally kept. `JourneyBackdrop.jsx` still the only dead file (user
+    chose to keep).
+  - **README:** added full "rebuild the DB from scratch" path (own Postgres+
+    PostGIS → download.py → manual Kaggle timetable → load_v2 → verify →
+    cache) for a teammate without the shared DB.
+  - **Recommendations logged (not yet done):** *Pricing* — replace haversine×
+    1.25 distance with real per-stop cumulative km from the data + fit fares
+    from the 124MB IRCTC-2023 `price_data.csv` (telescopic slabs, superfast/
+    catering/GST) for true accuracy; current linear per-km is a rough average.
+    *Map* — OpenFreeMap/OSM draws J&K/Arunachal with "on-the-ground" (disputed)
+    borders, not India's official line; India-compliant fix = Mappls/MapMyIndia
+    tiles (free dev key, better tier-2/3 data) or an official-boundary GeoJSON
+    overlay. Both are user-key/decision tasks — flagged for later.
+- **2026-07-04 (tests + pricing/main-train + docs)** —
+  - **Pytest suite** (`backend/tests/`, 14 tests, ~5s): contract shapes +
+    live-engine regressions (P9–P11) — route count, Gorakhpur→UP geocode,
+    reasoning modes, sane fares, transfer connection safety, weekday filter,
+    direct-id rebuild, autocomplete states, class-fares. Engine tests skip
+    gracefully without a DB so contract tests run on any clone. `pytest` added
+    to requirements.
+  - **Per-class fares:** every train leg + route `mainTrain` now carries
+    `classFares` [{code,label,fareInr}] (Sleeper/AC 3-tier/… cheapest-first)
+    from the calibrated rates × distance; headline shows "from ₹X". New
+    `ClassFares` component on RouteCard + LegTimeline.
+  - **Main train surfaced:** route `mainTrain` (the longest train leg) shown on
+    each card — name + "BOARD dep → ALIGHT arr" — so users see *which* train.
+  - **Root `README.md`** added: pull→run-in-3-min steps (backend venv/env →
+    frontend proxy → tests), data/credentials note, contributor logging norm.
+  - **Codebase audit:** clean — no tracked artifacts, seed.py/mock-data/
+    docker-compose all intentionally kept (fallback / empty-states / future
+    infra). Only dead file: `frontend/src/components/JourneyBackdrop.jsx`
+    (0 imports) — pending user OK to delete.
+- **2026-07-04 (Step 2+3 plan locked)** — full execution plan written into
+  `PHASE_B_PLAN.md` §9b: commit → pytest suite → Kaggle delay ETL
+  (`train_delays` aggregates) → engine wiring (measured `delayProfile`,
+  empirical-CDF connection safety, composite reliability, `delaySource`
+  honesty flag) → verify → budget-guarded collector skeleton. User tasks:
+  download the two Kaggle delay datasets; register a free indianrailapi key
+  as the candidate daily-collector provider.
 - **2026-07-04 (friend's 📌 list cleared)** — completed the three items left
   for the backend owner: (1) **fares** — done earlier via calibration from 288k
   real IRCTC-2023 quotes (per-class ₹/km), materially better than the ₹0.7/km

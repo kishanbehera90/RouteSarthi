@@ -1,16 +1,24 @@
 import { Link } from 'react-router-dom'
 import { motion } from 'motion/react'
-import { ArrowRight, MapPinned } from 'lucide-react'
+import { ArrowRight, MapPinned, TrainFront } from 'lucide-react'
 import ModeIcon from './ModeIcon'
 import ReliabilityBadge from './ReliabilityBadge'
 import ConfirmationPill from './ConfirmationPill'
 import WhyThisRoute from './WhyThisRoute'
 import ConfirmationProbability from './ConfirmationProbability'
+import ClassFares from './ClassFares'
 import ArrowButton from './ArrowButton'
 import { formatDuration, formatFare } from '../lib/utils'
 
-export default function RouteCard({ route, index = 0 }) {
+export default function RouteCard({ route, index = 0, tag = null }) {
   const modes = route.legs.filter((l) => l.mode !== 'connection').map((l) => l.mode)
+  // The train the traveller actually rides most of the way.
+  const main =
+    route.mainTrain ??
+    (() => {
+      const t = route.legs.filter((l) => l.mode === 'train')
+      return t.length ? { name: t.sort((a, b) => (b.durationMins || 0) - (a.durationMins || 0))[0].name } : null
+    })()
 
   return (
     <motion.div
@@ -33,6 +41,11 @@ export default function RouteCard({ route, index = 0 }) {
             </span>
           )}
           <ConfirmationPill status={route.confirmation} waitlistPosition={route.waitlistPosition} />
+          {tag && (
+            <span className="inline-flex items-center rounded-full bg-mist-50 px-2 py-0.5 text-xs font-semibold text-mist-600">
+              {tag}
+            </span>
+          )}
         </div>
         <ReliabilityBadge score={route.reliability} />
       </div>
@@ -46,12 +59,35 @@ export default function RouteCard({ route, index = 0 }) {
         ))}
       </div>
 
+      {route.roadOnly ? (
+        <div className="mt-2 flex items-center gap-1.5 text-sm font-medium text-content">
+          <ModeIcon mode="cab" className="h-4 w-4 shrink-0 text-brand-500" />
+          <span>Direct by road (cab or bus)</span>
+        </div>
+      ) : (
+        main && (
+          <div className="mt-2 flex items-center gap-1.5 text-sm font-medium text-content">
+            <TrainFront className="h-4 w-4 shrink-0 text-brand-500" />
+            <span className="truncate">{main.name}</span>
+            {route.transfers > 0 && <span className="shrink-0 text-xs text-faint">+1 change</span>}
+          </div>
+        )
+      )}
+      {main?.depart && (
+        <p className="mt-0.5 text-xs text-faint">
+          {main.from} {main.depart} → {main.to} {main.arrive}
+          {main.days && <span className="text-mist-600"> · {main.days}</span>}
+        </p>
+      )}
+
       <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
         <span className="text-lg font-semibold text-content">
           {route.totalTimeMins ? formatDuration(route.totalTimeMins) : '—'}
         </span>
-        <span className="text-sm text-muted">{formatFare(route.totalFareInr)}</span>
+        <span className="text-sm text-muted">from {formatFare(route.totalFareInr)}</span>
       </div>
+
+      {main?.classFares?.length > 1 && <ClassFares fares={main.classFares} className="mt-2" />}
 
       {route.clearProbabilityPct != null && (
         <ConfirmationProbability

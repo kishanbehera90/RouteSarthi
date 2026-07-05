@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { motion } from 'motion/react'
-import { ShieldCheck, ShieldAlert, Navigation } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Navigation, ChevronDown } from 'lucide-react'
 import ModeIcon from './ModeIcon'
 import ConfirmationPill from './ConfirmationPill'
 import ConfirmationProbability from './ConfirmationProbability'
+import ClassFares from './ClassFares'
 import { formatFare } from '../lib/utils'
 
 function OnTimeBar({ pct }) {
@@ -50,12 +52,13 @@ function ConnectionRow({ leg }) {
 }
 
 function LegRow({ leg }) {
+  const [showStops, setShowStops] = useState(false)
   return (
     <div className="flex gap-3 rounded-xl border border-line bg-surface p-3">
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-50">
         <ModeIcon mode={leg.mode} className="h-4.5 w-4.5 text-brand-600" />
       </div>
-      <div className="flex-1">
+      <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="font-medium text-content">{leg.name}</p>
           <ConfirmationPill status={leg.confirmation} waitlistPosition={leg.waitlistPosition} />
@@ -63,6 +66,28 @@ function LegRow({ leg }) {
         <p className="text-sm text-muted">
           {leg.from} {leg.depart} → {leg.to} {leg.arrive}
         </p>
+        {(leg.days || leg.halts != null) && (
+          <p className="mt-0.5 text-xs text-faint">
+            {leg.days && <span className="text-mist-600">{leg.days}</span>}
+            {leg.days && leg.halts != null ? ' · ' : ''}
+            {leg.halts != null && `${leg.halts} halts`}
+          </p>
+        )}
+        {leg.stops?.length > 2 && (
+          <div className="mt-1">
+            <button
+              type="button"
+              onClick={() => setShowStops((s) => !s)}
+              className="flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700"
+            >
+              {showStops ? 'Hide stops' : `View all ${leg.stops.length} stops`}
+              <ChevronDown className={`h-3 w-3 transition-transform ${showStops ? 'rotate-180' : ''}`} />
+            </button>
+            {showStops && (
+              <p className="mt-1 text-xs leading-relaxed text-muted">{leg.stops.join(' · ')}</p>
+            )}
+          </div>
+        )}
         {leg.delayProfile && (
           <div className="mt-1">
             <p className="text-xs text-faint">
@@ -77,6 +102,11 @@ function LegRow({ leg }) {
             probability={leg.clearProbabilityPct}
             className="mt-2 max-w-[220px]"
           />
+        )}
+        {leg.classFares?.length > 0 && (
+          <div className="mt-2 border-t border-line-soft pt-2">
+            <ClassFares fares={leg.classFares} />
+          </div>
         )}
       </div>
       <p className="shrink-0 self-start text-sm font-semibold text-content">

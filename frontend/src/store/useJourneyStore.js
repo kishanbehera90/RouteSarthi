@@ -7,9 +7,11 @@ export const useJourneyStore = create(
       search: { from: 'Rourkela', to: 'Nashik', date: '', pref: 'confirmed' },
       setSearch: (patch) => set((s) => ({ search: { ...s.search, ...patch } })),
 
-      filters: { acOnly: false, fewerTransfers: false, avoidLateNight: false },
+      filters: { acOnly: false, fewerTransfers: false, avoidLateNight: false, travelClass: '' },
       toggleFilter: (key) =>
         set((s) => ({ filters: { ...s.filters, [key]: !s.filters[key] } })),
+      setTravelClass: (travelClass) =>
+        set((s) => ({ filters: { ...s.filters, travelClass } })),
 
       savedTrips: [],
       saveTrip: (route) =>

@@ -7,6 +7,37 @@ const items = [
   { key: 'avoidLateNight', label: 'Avoid late-night arrivals' },
 ]
 
+const CLASSES = [
+  { code: '', label: 'Any class' },
+  { code: 'SL', label: 'Sleeper' },
+  { code: '3A', label: 'AC 3-tier' },
+  { code: '2A', label: 'AC 2-tier' },
+  { code: '1A', label: 'AC First' },
+  { code: 'CC', label: 'Chair Car' },
+  { code: '2S', label: 'Second sitting' },
+]
+
+function ClassPicker({ vertical }) {
+  const travelClass = useJourneyStore((s) => s.filters.travelClass)
+  const setTravelClass = useJourneyStore((s) => s.setTravelClass)
+  return (
+    <select
+      value={travelClass}
+      onChange={(e) => setTravelClass(e.target.value)}
+      className={`rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-muted outline-none transition hover:border-brand-200 ${
+        vertical ? 'w-full' : ''
+      }`}
+      aria-label="Travel class"
+    >
+      {CLASSES.map((c) => (
+        <option key={c.code} value={c.code}>
+          {c.label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
 export default function FiltersPanel({ vertical = false }) {
   const filters = useJourneyStore((s) => s.filters)
   const toggleFilter = useJourneyStore((s) => s.toggleFilter)
@@ -27,6 +58,9 @@ export default function FiltersPanel({ vertical = false }) {
             {filters[item.key] && <Check className="h-3.5 w-3.5" />}
           </button>
         ))}
+        <div className="mt-2 px-1">
+          <ClassPicker vertical />
+        </div>
       </div>
     )
   }
@@ -47,6 +81,7 @@ export default function FiltersPanel({ vertical = false }) {
           {item.label}
         </button>
       ))}
+      <ClassPicker />
     </div>
   )
 }

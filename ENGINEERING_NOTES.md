@@ -437,6 +437,33 @@ Repeat searches: **~0 ms** (0.00–0.02 ms). ✅
   rename-normalisation layer at ingestion, so every source converges on the
   geo-bearing code."
 
+## P12 — Routes that backtracked past the origin (user-caught)
+- **Symptom:** Ringas → Salasar returned "cab Ringas→Jaipur (55km), train
+  Jaipur→**Ringas**, cab Ringas→Salasar (92km)" — a train ride *back to the
+  starting town*. Absurd and trust-destroying.
+- **Root cause:** the engine generated candidate routes as (any origin-railhead
+  → any dest-railhead) train pairs. Jaipur was in the origin's railhead set
+  (big hub, within radius) and a Jaipur→Ringas train "connected" it to a
+  dest-railhead (Ringas, which happened to be the nearest station to Salasar,
+  92km away). Nothing enforced that the journey make *geographic progress*.
+- **The fix:** a `_useful(board, alight, origin, dest)` filter — a rail leg is
+  kept only if the alight is CLOSER to the destination than the board (progress
+  toward goal) AND FARTHER from the origin than the board (never loop back).
+  Applied to both direct and transfer candidates.
+- **Why this fix:** it's a cheap, universal geometric invariant that encodes
+  common sense ("don't ride away from where you're going") without hard-coding
+  corridors. Rejected: distance-ratio thresholds (fragile) and post-hoc
+  reranking (the bad route would still appear lower down).
+- **Impact:** Ringas→Salasar now boards Jaipur→Phulera Jn (toward the
+  destination); the backtrack class is gone. Locked with a regression test
+  asserting no route alights at the origin's own station.
+- **Interview soundbite:** "A route told users to take a train back to the town
+  they started in. The engine paired 'any nearby station' with 'any nearby
+  station' and one pairing looped backward. The fix was a geometric
+  monotonicity check — a rail leg must end closer to the destination and
+  farther from the origin than it began — which killed the whole class of
+  nonsense routes with four lines of code."
+
 ---
 
 ## Template for future entries
