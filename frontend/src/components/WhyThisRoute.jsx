@@ -1,11 +1,13 @@
-import { Sparkles } from 'lucide-react'
+import { Route } from 'lucide-react'
 
+// Quiet "why we chose this" footnote — a route mark + muted text, no boxed
+// callout. Intentionally understated so it doesn't compete with the card.
 export default function WhyThisRoute({ text }) {
   if (!text) return null
   return (
-    <div className="flex gap-2 rounded-lg bg-brand-50 px-3 py-2 text-sm text-brand-800">
-      <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-brand-500" />
-      <p className="leading-snug">{text}</p>
+    <div className="flex gap-1.5 text-xs leading-relaxed text-muted">
+      <Route className="mt-0.5 h-3.5 w-3.5 shrink-0 text-mist-500" />
+      <p>{text}</p>
     </div>
   )
 }

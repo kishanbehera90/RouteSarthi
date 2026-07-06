@@ -87,7 +87,7 @@ export default function RouteCard({ route, index = 0, tag = null }) {
         <span className="text-sm text-muted">from {formatFare(route.totalFareInr)}</span>
       </div>
 
-      {main?.classFares?.length > 1 && <ClassFares fares={main.classFares} className="mt-2" />}
+      {main?.classFares?.length > 0 && <ClassFares fares={main.classFares} collapsible className="mt-3" />}
 
       {route.clearProbabilityPct != null && (
         <ConfirmationProbability

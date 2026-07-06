@@ -6,7 +6,9 @@ function readInitial() {
   if (typeof window === 'undefined') return 'light'
   const saved = localStorage.getItem(STORAGE_KEY)
   if (saved === 'light' || saved === 'dark') return saved
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  // Default to LIGHT regardless of the OS setting — light is our intended
+  // default look. (Dark only if the user has explicitly toggled to it.)
+  return 'light'
 }
 
 function apply(theme) {

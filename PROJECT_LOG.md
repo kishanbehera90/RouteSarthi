@@ -180,9 +180,21 @@ Lives in `backend/`.
     hub-scan `reasoning` for the decision animation, then formally unify
     `/api/search` into `/api/routes`.
 - ⏳ **Step 2 — Data collector.** Daily live-status + PNR snapshots.
-- ⏳ **Step 3 — Delay-aware scoring.** Kaggle priors → ML; connection safety.
-- ⏳ **Step 4 — Confirmation ML.** Quota heuristic → model; Redis caching.
-- ⏳ **Step 5 — Composite ranking + explainability.** Full computed routes.
+- 🟡 **Step 3 — Delay-aware scoring — v1 MODELLED (not yet measured).** New
+  `app/metrics.py`: a per-leg delay model (expected delay + on-time% from train
+  class/priority, route length, halts), feeding **connection safety** =
+  P(arriving train's delay ≤ buffer) and a composite **reliability**. Replaces
+  the flat placeholders — numbers now vary per train/route. Still a *model* on
+  real train attributes, not fit to observed delays; the SAME functions get
+  calibrated once the collector / a Kaggle delay set lands. See ENGINEERING_NOTES P12.
+- 🟡 **Step 4 — Confirmation — v1 MODELLED.** `confirmationPct` + state from a
+  demand proxy (class scarcity, train priority, lead-time from the travel date,
+  peak-season) — replaces the constant "confirmed". Real availability/PNR data
+  still pending (hardest to source free). Labelled "est." in the UI.
+- 🟡 **Fares — now realistic.** Calibrated per-km base **+ reservation +
+  superfast surcharge (premium/superfast trains) + 5% GST on AC** (`metrics.rail_fare`).
+- ⏳ **Step 5 — Composite ranking + explainability.** Learned ranking once real
+  delay/confirmation data exists.
 
 ---
 

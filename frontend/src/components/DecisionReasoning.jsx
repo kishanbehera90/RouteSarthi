@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { Sparkles, X, Radar, Check, ArrowRight, RotateCcw, TrainFront } from 'lucide-react'
+import { X, Radar, Check, ArrowRight, RotateCcw, TrainFront } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 // Animated "watch the engine choose" strip. Two modes:
@@ -50,7 +50,7 @@ export default function DecisionReasoning({ reasoning, from, to }) {
     <div className="rounded-2xl border border-line bg-surface p-4 shadow-card">
       <div className="flex items-center justify-between gap-2">
         <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-mist-600">
-          <Sparkles className="h-3.5 w-3.5" />
+          <Radar className="h-3.5 w-3.5" />
           How we found this route
         </p>
         <button

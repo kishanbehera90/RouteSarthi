@@ -466,6 +466,71 @@ Repeat searches: **~0 ms** (0.00–0.02 ms). ✅
 
 ---
 
+## P13 — Reliability/confirmation/delays were flat placeholders (modelled vs measured)
+
+- **Symptom:** the app showed a confident "reliability %", always "confirmed",
+  and a buffer-only "connection safety" — numbers that looked authoritative but
+  didn't actually reflect the train, route, or class. Fares were a flat ₹/km.
+- **Root cause:** the routing engine shipped before the *intelligence* layer.
+  The honest blocker is that **there's no free feed of observed delays or seat
+  availability** — so we can't yet *measure* these.
+- **The key decision — modelled vs measured:** rather than fake "measured"
+  numbers or leave flat placeholders, I built **transparent models driven by the
+  real train attributes we DO have** (`app/metrics.py`):
+  - **Delay / on-time:** expected delay grows with route length + halts and
+    depends on train priority (Rajdhani/Shatabdi < Superfast < Express <
+    Passenger), turned into an on-time % via an exponential "within 30 min" model.
+  - **Connection safety:** `P(arriving train's delay ≤ buffer)` from *that
+    train's* delay distribution — not the buffer alone.
+  - **Reliability:** a composite of the weakest leg's on-time %, connection
+    safety, and first-mile access.
+  - **Confirmation:** a demand proxy (class scarcity + train priority + lead
+    time from the travel date + peak season) → a varying %, not a constant.
+  - **Fares:** the calibrated per-km base **+ reservation + superfast surcharge
+    + 5% GST on AC** — the real surcharge structure.
+- **Why this and not "measured":** measured needs data we can only get by running
+  the collector for weeks or buying a feed. Modelling on real attributes is the
+  textbook cold-start: it's honest (everything is labelled **"est."** in the UI
+  and `why` text), it *varies sensibly*, and — crucially — **the exact same
+  functions get re-fit to observed numbers** the moment Step 2/3 data lands. No
+  rewrite, just calibration.
+- **Impact:** reliability now spans ~56–95 by train/route (was a flat formula);
+  on-time 38–92%; confirmation 20–96% with confirmed/RAC/waitlisted states;
+  connection safety derives from the incoming train's delay; fares include real
+  surcharges (e.g. AC fares +5% GST, superfast +₹45). Verified end-to-end (17
+  tests green; live UI shows the varying "(est.)" values).
+- **Interview soundbite:** *"I was explicit about the line between modelled and
+  measured. With no free delay/seat feed, I built transparent models on real
+  train attributes — priority, distance, halts, buffer, lead time — so the
+  numbers vary honestly and are labelled 'estimated', and the same functions
+  calibrate to observed data later. Faking 'measured' numbers would've been the
+  worse engineering choice."*
+
+---
+
+## P14 — Making the Mappls route look premium (two gotchas)
+
+- **Goal:** the switch to Mappls (MapmyIndia) worked, but the route line was a
+  flat heavy indigo and the markers were plain discs — "didn't feel good."
+- **Fix (the beautiful-route recipe):** draw the polyline **twice** — a wider
+  white "casing" underneath, then a brighter indigo line on top — so the route
+  pops off the basemap; and redesign markers as clean **ringed dots** (white
+  base + colored core + inner pip) with a soft **translucent-halo** ring.
+- **Gotcha 1 — Mappls' vector SDK is built on MapLibre GL.** My "did it fall
+  back to MapLibre?" check matched `.maplibregl-map` *inside* the Mappls
+  container — it was Mappls' own renderer, not our fallback. There was only ever
+  one map. Lesson: verify by container ancestry, not a class name a vendor may
+  reuse.
+- **Gotcha 2 — `<feDropShadow>` breaks a data-URI SVG used as a marker icon.**
+  Adding a drop-shadow filter made the icon invalid, so Mappls silently rendered
+  its **default red pins** (detected via `elemsWithOurSvg === 0` while marker
+  divs existed). Fix: fake the soft shadow with a translucent halo circle —
+  filters are unreliable when an SVG is consumed as an `<img>`/marker image.
+- **Impact:** crisp, premium route line + cohesive origin/hub/destination
+  markers; verified custom icons apply (not vendor defaults), no console errors.
+
+---
+
 ## Template for future entries
 ```
 ## P# — <short title>

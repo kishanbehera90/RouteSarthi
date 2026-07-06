@@ -8,9 +8,10 @@
     <script>
       (function () {
         try {
-          var t = localStorage.getItem('routesarthi-theme')
-          if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-          if (t === 'dark') document.documentElement.classList.add('dark')
+          // Default light; only dark if the user explicitly chose it before.
+          if (localStorage.getItem('routesarthi-theme') === 'dark') {
+            document.documentElement.classList.add('dark')
+          }
         } catch (e) {}
       })()
     </script>
