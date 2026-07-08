@@ -82,11 +82,19 @@ to end. Lives in `frontend/`.
 
 ---
 
-## Phase B — Backend routing + reliability engine — 🔄 IN PROGRESS
+## Phase B — Backend routing + reliability engine — ✅ ~COMPLETE (collector deferred)
 
-Strategy: trains-first · free/open data only · every city (~8k towns) ·
-collector from day one. Full detail in [`PHASE_B_PLAN.md`](PHASE_B_PLAN.md).
+Strategy: multi-modal (road competes with rail) · free/open data only · every
+city (~8k towns). Full detail in [`PHASE_B_PLAN.md`](PHASE_B_PLAN.md).
 Lives in `backend/`.
+
+> **Status (2026-07-08):** Steps 1, 3, 4, 5 are done and the reliability layer
+> moved from *modelled* to **measured** — real IRCTC fares, real per-stop
+> distances, and a full year of measured delays (7,024 trains); only seat
+> **confirmation** stays modelled ("est.") because no free PNR feed exists.
+> Step 2 (the collector) is intentionally **deferred** — no real users to
+> collect from yet. See the 2026-07-08 changelog entries for the full detail;
+> the step notes below are the original historical record.
 
 - ✅ **Step 0 — Scaffold.** FastAPI app serving the API contract from seed
   fixtures (ported from the frontend mock). Health + all 4 endpoints
@@ -180,21 +188,24 @@ Lives in `backend/`.
     hub-scan `reasoning` for the decision animation, then formally unify
     `/api/search` into `/api/routes`.
 - ⏳ **Step 2 — Data collector.** Daily live-status + PNR snapshots.
-- 🟡 **Step 3 — Delay-aware scoring — v1 MODELLED (not yet measured).** New
-  `app/metrics.py`: a per-leg delay model (expected delay + on-time% from train
-  class/priority, route length, halts), feeding **connection safety** =
-  P(arriving train's delay ≤ buffer) and a composite **reliability**. Replaces
-  the flat placeholders — numbers now vary per train/route. Still a *model* on
-  real train attributes, not fit to observed delays; the SAME functions get
-  calibrated once the collector / a Kaggle delay set lands. See ENGINEERING_NOTES P12.
-- 🟡 **Step 4 — Confirmation — v1 MODELLED.** `confirmationPct` + state from a
-  demand proxy (class scarcity, train priority, lead-time from the travel date,
-  peak-season) — replaces the constant "confirmed". Real availability/PNR data
-  still pending (hardest to source free). Labelled "est." in the UI.
-- 🟡 **Fares — now realistic.** Calibrated per-km base **+ reservation +
-  superfast surcharge (premium/superfast trains) + 5% GST on AC** (`metrics.rail_fare`).
-- ⏳ **Step 5 — Composite ranking + explainability.** Learned ranking once real
-  delay/confirmation data exists.
+- ✅ **Step 3 — Delay-aware scoring — now MEASURED.** Started as a model in
+  `app/metrics.py` (delay + on-time% from class/priority/length/halts); as of
+  2026-07-08 it uses a **full year of real observed delays** (`train_delays`,
+  7,024 trains, avg/p50/p80/p90/on-time%) with the model as fallback, tagged
+  `delaySource: measured | modelled`. Connection safety uses the incoming
+  train's measured distribution; the min transfer buffer now covers its p50
+  delay. See ENGINEERING_NOTES P13/P15 + the 2026-07-08 changelog.
+- 🟡 **Step 4 — Confirmation — MODELLED by design (honest ceiling).**
+  `confirmationPct` + state from a demand proxy (class scarcity, train priority,
+  lead-time, peak season), labelled "est." in the UI. Stays modelled until the
+  collector gathers PNR data — no free availability feed exists. This is the
+  intended final state for now, not a gap.
+- ✅ **Fares — now MEASURED.** Real IRCTC median fare per (class, distance band)
+  from `price_data.csv` (`app/data/fare_table.json`, `metrics.rail_fare`), over
+  real per-stop distances; modelled surcharge structure only as fallback.
+- ✅ **Step 5 — Composite ranking + explainability.** Reliability breakdown
+  (measured vs "est." factors), dynamic `why`, date-aware Plan B, seasonal-train
+  gating, and a reliability-tie preference for friction-free direct routes.
 
 ---
 
@@ -204,6 +215,38 @@ A working local slice is done (dev proxy + engine-backed `/api/routes`,
 the `fetch` calls with TanStack Query (caching/loading/error states), a proper
 API base-URL config for deploy (not just a dev proxy), and emit corridor
 `reasoning` so the decision animation works on real searches.
+
+### Phase C — ML roadmap (added 2026-07-08, once the measured-data layer landed)
+The 2026-07-08 data upgrade (fares, distances, delays → measured; see the
+changelog entry below) is what unlocks real ML — before it, `metrics.py` had
+no labelled dataset to fit a model to. Ranked by value ÷ effort, using data we
+already have on disk **now** (no collector needed to start):
+
+1. **Delay prediction (do this first).** Today every leg on a given train shows
+   ONE flat measured average (`train_delays.avg_delay`). But `combined_delay.csv`
+   has 38.4M dated, per-station observations — enough to predict delay
+   *conditioned on the trip*: a gradient-boosted model (LightGBM/XGBoost) on
+   tier, distance-from-origin, halts, day-of-week, month/season, and upstream
+   delay would turn "this train averages 39 min late" into "on a Tuesday in
+   July, at this station, ~55 min late." Slots into the exact hook
+   `metrics.leg_delay_profile(measured=…)` already has — add a third
+   `delaySource: "predicted"` tier between measured and modelled. Planned
+   layout: `etl/train_delay_model.py` (trains + serializes) → a small model
+   artifact loaded like `app/data/fare_table.json`, no new infra.
+2. **Connection safety as a learned probability.** Replace the exponential
+   `P(delay ≤ buffer)` approximation in `metrics.connection_safety` with a
+   calibrated classifier trained on historical hub delays — same data, richer
+   model, no new data source needed.
+3. **Seat confirmation model** — the one number still honestly labelled
+   "(est.)". Needs booking/PNR snapshots we don't have yet; **blocked on the
+   collector** (Phase B Step 2, deferred — no real users to collect from). Do
+   not attempt without that data; a model trained on nothing is worse than an
+   honest heuristic.
+4. **Learning-to-rank** for the composite `reliability` weights (currently
+   hand-set 50/30/20 etc.) — needs real user click/booking feedback. Deferred
+   with the collector, same reason as #3.
+
+Start with #1; it's the only one with zero new data dependencies.
 
 ## Phase D — Confidence layer — ⏳ PLANNED
 Stronger confirmation prediction, comfort/safety filters, split-ticketing.
@@ -221,6 +264,111 @@ must be set to `frontend/`.)
 ---
 
 ## Changelog
+- **2026-07-08 (seasonal/special trains date-gated via the calendar)** — a Magh
+  Mela special (`5002 GKP JI MAGH MELA`) was showing on every date though it
+  only runs a few days in January. Now special trains surface only near their
+  season, using the date the user already picks.
+  - **Detection (data-driven, in `etl/load_delays.py`):** the same 1-GB delay
+    stream now also collects each train's distinct **origin operating dates** →
+    a train is "seasonal" if it ran on **≤30 distinct days across ≤3 calendar
+    months** in the full year. Stores `operating_months` (e.g. "1,2") on the
+    `trains` table (NULL = year-round). **111 seasonal trains** detected — Magh
+    Mela / festival / summer specials (57 carry an explicit SPL/MELA/SPECIAL
+    keyword; the rest are sparse DEMU/PASS seasonals). Kept, not deleted —
+    they're real and useful in-season, and deleting would lose their delay
+    history.
+  - **Gating (`graph.runs_in_month` + `engine.search`):** a seasonal train is
+    included only when the travel month ∈ its window; **hidden on an undated
+    search** (can't confirm it runs). Regular trains are never affected.
+    Verified: 5002 hidden undated & in July, shown Jan 13 with a
+    "Seasonal · runs in Jan" badge (new amber chip on `RouteCard`).
+  - **Ranking fix it surfaced:** with the Magh Mela specials (which board at
+    Gorakhpur) gated out, an undated GKP→Prayagraj search suddenly topped with a
+    *Basti* cross-origin — because it **tied on reliability** with the best
+    Gorakhpur-direct and won the raw-time tiebreak, ignoring its 90-min
+    first-mile road. Fixed `_rank`: on a reliability tie, a friction-free
+    **direct** now beats a cross-origin (don't send someone to another town's
+    railhead when their own station has an equally-reliable train). Top is
+    Gorakhpur again.
+  - Tests: +1 seasonal regression (hidden undated/off-season, shown + labelled
+    in-season); the rank fix restored 3 corridor tests that had encoded the old
+    special-dominated top → **35/35 pass**. Cache v3→v4 (adds `TRAIN_MONTHS`).
+  - **Note on 5002 specifically:** it ran only Jan 1/3/13 2026 in the data —
+    the Magh Mela snan window at Prayagraj. Magh Mela is an *annual* event, so IR
+    reissues these specials every Jan-Feb; our one-year dataset only proves it's
+    strictly seasonal (hence NULL weekday-days, Jan-only window), not the
+    year-over-year recurrence (that's from IR's standing practice).
+- **2026-07-08 (user-caught batch: Plan B, connection buffer, premium classes)** —
+  three fixes after the measured-data upgrade.
+  - **Plan B was nonsensical** — a route departing 21:30 showed "next train"
+    departing 13:45 (already gone). Root cause: planB was just `routes[i+1]`
+    (next in the *ranking*), ignoring departure time. Fixed: `_first_train_dep_min`
+    + pick the alternative that departs **soonest AFTER** this route (a real "if
+    you miss it" fallback); if none is later, keep the route's own delay/hub
+    advice. Verified live on GKP→Prayagraj: 21:30 route → "Next train: 15004
+    departing 23:15".
+  - **Connection buffer now covers the incoming train's typical delay** —
+    `graph.one_transfer` raised its min buffer from a flat 30 min to
+    `max(30, min(p50_delay_of_first_train, 90))` using measured `train_delays`.
+    A transfer where train 1 is usually 40 min late no longer offers a 30-min
+    connection. Scanned 8 cross-country pairs: **0 of 27 measured transfers**
+    violate the invariant.
+  - **Premium class-list cleanup** — `engine._offered_classes` fixes the generic
+    `classes` column: AC-sleeper premiums (Rajdhani/Duronto/Humsafar/Garib Rath,
+    incl. Tejas *Rajdhani*) drop SL/2S; chair-car premiums (Shatabdi/Vande
+    Bharat/Gatimaan/Tejas *Express*) keep only CC/EC/2S. Guards for the
+    ambiguous brands: "TEJAS RAJ" and "VANDE BHARAT SL" are AC-sleeper, not
+    chair-car. Rajdhani 12301 now shows 3A/2A/1A (was +SL); Vande Bharat →
+    CC/2S/EC. (One train, 2003 Swarna Shatabdi, still shows SL/3A/2A because its
+    *raw* data lists no CC/EC — unfixable without a better source.)
+  - Tests: +3 regressions (planB-departs-later, buffer-covers-p50, premium-class
+    cleanup) → **34/34 pass**. All three verified in-browser, no console errors.
+- **2026-07-08 (Phase B measured-data upgrade — modelled → measured)** — pulled
+  in two free datasets and turned three "modelled" numbers into real ones,
+  keeping the honest "est." labels where no free ground truth exists.
+  - **Real fares (Step 1):** `scratchpad build_fares` → `app/data/fare_table.json`
+    from IRCTC `price_data.csv` (326k priced rows, 6 classes): median `totalFare`
+    per (class, 50-km band) + a per-class linear fit fallback. `metrics.real_fare`
+    /`rail_fare` now return IRCTC-accurate fares (SL@500 ₹325, 2A@1000 ₹1940),
+    premium trains carry a +12% multiplier. Falls back to the old model when a
+    class/band is missing.
+  - **Real per-stop distances:** `etl/load_schedule_extra.py` →
+    `app/data/train_cumdist.json` (8,673 trains) from the delay dump's
+    `combined_schedule.csv` `distance_from_origin`. `graph.rail_km` + `engine._rail_km`
+    now use exact routed km (Mumbai Rajdhani MMCT→NDLS = **1384 km**, was
+    haversine×1.25) instead of straight-line.
+  - **Measured delays (Step 2):** `etl/load_delays.py` streams the 1 GB
+    `combined_delay.csv` (38.4M rows, a full year Feb-2025→Feb-2026) in one pass →
+    `train_delays` table for **7,024 trains** (avg/p50/p80/p90/on_time%/n_obs,
+    source='measured'). `graph.TRAIN_DELAY` + `metrics.leg_delay_profile(measured=…)`
+    surface real on-time % with modelled fallback, tagged `delaySource`. Avadh
+    Exp 122-min avg / 26% on-time, Rajdhani 96% — matches reality.
+  - **"Daily but not daily" bug fixed:** the fresh-2026 source marked **7,861/8,366
+    trains as 7-day** (and the rest 1-day — nothing in between = broken scrape).
+    Recovered true service days from origin (station_no=1) departure weekdays over
+    the year: **1,782 trains corrected off false "daily"** (2,555 genuinely
+    non-daily); running-days now spread 1→7 (e.g. Arunachal Exp Tue/Sat, Triveni
+    Exp Mon/Wed/Fri). New trains get NULL days (no false claim) not fabricated 7-day.
+  - **Bigger DB:** +**1,511 trains / 22,462 stops** from the delay-dump schedule
+    (not already in DB, ≥2 placeable stops), classes guessed from type_code,
+    source='delay-schedule'. DB 8,606→10,117 trains; graph cache v2→v3.
+  - **Integrity + UI (Step 3):** `tests/test_metrics.py` (13 tests, metrics.py had
+    zero) → **31/31 pass**. "est." affordance added to ReliabilityBadge (compact),
+    ConfirmationPill, and a green **"measured"** chip on breakdown factors backed by
+    real data. Confirmation stays modelled-and-labelled (no free PNR feed — the
+    honest ceiling).
+  - **Ranking/explainability (Step 4):** reliability breakdown shows dynamic
+    **"On-time record" (measured)** vs "On-time (est.)"; `why`/`planB` refined
+    (p90 buffer advice on measured direct routes, hub-rebook advice on risky
+    transfers). Verified in-browser (Mumbai→New Delhi): gauge 88%, On-time record
+    96% measured, real per-class fares, no console errors.
+  - **Test fix:** `test_direct_road_option_for_short_hop` moved Ringas→Salasar →
+    **Salasar→Sikar** — with accurate distances the engine correctly prefers
+    train-to-Sikar-then-road for Ringas→Salasar (Sikar is 42 km from Salasar vs
+    Ringas 92 km), so that pair is no longer a valid "road must win" example.
+  - Known (pre-existing, not from this work): premium trains (Rajdhani/Shatabdi)
+    still list non-AC classes (SL/2S) because the `classes` column is generic —
+    class-list cleanup is a separate follow-up.
 - **2026-07-05 (product reframe: multi-modal + cities-first)** — user
   correction: RouteSarthi is a **travel planner, not a train app**.
   - **Direct road option added** (`_road_route`): a door-to-door cab/bus leg

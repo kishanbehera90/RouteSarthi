@@ -66,6 +66,88 @@ def test_main_train_and_class_fares(client, need_engine):
     assert {"code", "label", "fareInr"} <= set(fares[0])
 
 
+def _first_train_depart(route):
+    for l in route["legs"]:
+        if l["mode"] == "train" and l.get("depart"):
+            hh, mm = l["depart"].split(":")
+            return int(hh) * 60 + int(mm)
+    return None
+
+
+def test_plan_b_next_train_departs_later(client, need_engine):
+    # The bug: a route departing 21:30 showed a "next train" Plan B departing
+    # 13:45 (already gone). A "miss it -> next train" fallback must depart AT OR
+    # AFTER the train you'd be missing.
+    import re
+    routes = _routes(client, "Gorakhpur", "Prayagraj")["routes"]
+    for r in routes:
+        pb = r.get("planB") or ""
+        m = re.search(r"departing (\d\d):(\d\d)", pb)
+        if not m:
+            continue
+        nxt = int(m.group(1)) * 60 + int(m.group(2))
+        own = _first_train_depart(r)
+        if own is not None:
+            assert nxt >= own, f"planB train departs {m.group(0)} before this route's {own//60:02d}:{own%60:02d}"
+
+
+def test_transfer_buffer_covers_first_train_typical_delay(client, need_engine):
+    # Every multi-train connection must give a buffer that covers the incoming
+    # train's TYPICAL (measured p50) delay, capped at 90 min — otherwise you'd
+    # miss the transfer more often than not.
+    from app import graph
+    routes = _routes(client, "Imphal", "Bengaluru")["routes"]
+    for r in routes:
+        if r.get("transfers", 0) <= 0:
+            continue
+        t1 = next((l.get("trainNo") for l in r["legs"] if l["mode"] == "train"), None)
+        buf = next((l["bufferMins"] for l in r["legs"]
+                    if l["mode"] == "connection" and l.get("bufferMins")), None)
+        d1 = graph.TRAIN_DELAY.get(t1) if t1 else None
+        if d1 and d1.get("p50") is not None and buf is not None:
+            assert buf >= min(round(d1["p50"]), 90)
+
+
+def test_premium_train_class_cleanup(client, need_engine):
+    # Rajdhani/Duronto (AC-sleeper) must not list Sleeper/2S; Shatabdi/Vande
+    # Bharat (chair-car) must not list AC-sleeper — cleaned from the generic
+    # `classes` column.
+    from app import engine, graph
+    for tn, name in graph.TRAIN_NAME.items():
+        u = (name or "").upper()
+        cls = set(engine._offered_classes(tn))
+        if not cls:
+            continue
+        if ("RAJDHANI" in u or "DURONTO" in u) and "RAJ" in u.split():
+            assert "SL" not in cls and "2S" not in cls
+        # chair-car premiums only (exclude the AC-sleeper "Vande Bharat SL")
+        if ("VANDE" in u and "SL" not in u.split()) or ("SHATABDI" in u and cls & {"CC", "EC"}):
+            assert "1A" not in cls and "SL" not in cls
+
+
+def test_seasonal_train_is_date_gated(client, need_engine):
+    # 5002 GKP JI MAGH MELA ran only in January (Magh Mela). It must be hidden on
+    # an undated or off-season search, and surface only when the travel date
+    # falls in its window — with a "Seasonal" label.
+    import pytest
+    from app import graph
+    if not graph.is_seasonal("5002"):
+        pytest.skip("seasonal data (operating_months) not loaded")
+
+    def find_5002(date=None):
+        routes = _routes(client, "Gorakhpur", "Prayagraj", **({"date": date} if date else {}))["routes"]
+        for r in routes:
+            if any(l.get("trainNo") == "5002" for l in r["legs"]):
+                return r
+        return None
+
+    assert find_5002(None) is None            # undated search: hidden
+    assert find_5002("2026-07-15") is None    # off-season (July): hidden
+    inseason = find_5002("2026-01-13")         # Magh Mela season: shown
+    assert inseason is not None
+    assert "Seasonal" in (inseason["mainTrain"].get("seasonal") or "")
+
+
 def test_places_cities_first_with_states(client, need_engine):
     places = client.get("/api/places", params={"q": "gorakh"}).json()["places"]
     assert places
@@ -84,7 +166,11 @@ def test_station_only_town_is_searchable(client, need_engine):
 
 def test_direct_road_option_for_short_hop(client, need_engine):
     # A travel planner must offer (and often prefer) direct road for short trips.
-    routes = _routes(client, "Ringas", "Salasar", pref="fastest")["routes"]
+    # Salasar<->Sikar has no through train and the towns are close, so a direct
+    # cab/bus should win outright. (For Ringas->Salasar, by contrast, training to
+    # Sikar first is legitimately faster — Sikar is far closer to Salasar — which
+    # is why that pair is NOT a valid "road must win" example.)
+    routes = _routes(client, "Salasar", "Sikar", pref="fastest")["routes"]
     assert any(r.get("roadOnly") for r in routes)
     assert routes[0].get("roadOnly")  # fastest for this short hop
 

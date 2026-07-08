@@ -40,7 +40,11 @@ export default function RouteCard({ route, index = 0, tag = null }) {
               Direct
             </span>
           )}
-          <ConfirmationPill status={route.confirmation} waitlistPosition={route.waitlistPosition} />
+          <ConfirmationPill
+            status={route.confirmation}
+            waitlistPosition={route.waitlistPosition}
+            estimated={!route.roadOnly && route.confirmationPct != null}
+          />
           {tag && (
             <span className="inline-flex items-center rounded-full bg-mist-50 px-2 py-0.5 text-xs font-semibold text-mist-600">
               {tag}
@@ -78,6 +82,14 @@ export default function RouteCard({ route, index = 0, tag = null }) {
           {main.from} {main.depart} → {main.to} {main.arrive}
           {main.days && <span className="text-mist-600"> · {main.days}</span>}
         </p>
+      )}
+      {main?.seasonal && (
+        <span
+          className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-caution-50 px-2 py-0.5 text-xs font-semibold text-caution-600"
+          title="A special train that only runs during this season — shown because your travel date falls in its window"
+        >
+          {main.seasonal}
+        </span>
       )}
 
       <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">

@@ -150,19 +150,32 @@ usage data arrives. Every route ships a transparent "why".
 
 ## 7. ML from day one (with honest cold-start)
 
+**Status update (2026-07-08):** the delay cold-start landed — not as ML yet,
+but as measured aggregates (`train_delays`: avg/p50/p80/p90/on_time_pct for
+7,024 trains, from a full year of the Kaggle delay dump). That's the labelled
+dataset a model would train on; before this it didn't exist. See the Phase C
+ML roadmap in `PROJECT_LOG.md` for the concrete next-step spec.
+
 Two models, live from the start, with heuristic priors so the product works
 before the data matures:
 
 1. **Confirmation / waitlist model** — gradient-boosted classifier. Features:
    WL position, quota type, class, days-to-departure, train, segment,
    season/holiday, clearance velocity. Cold-start = quota rules; improves as the
-   collector accumulates PNR snapshots.
+   collector accumulates PNR snapshots. **Blocked on the collector — no free
+   PNR data exists yet, so there's nothing to train on. Do not build a model
+   with zero real labels; the honest "(est.)" heuristic is the right interim.**
 2. **Delay model** — regression → per-leg arrival-delay distribution (feeds
-   connection safety). Cold-start = Kaggle seed (§C); improves from our own
-   collected running-status snapshots.
+   connection safety). Cold-start = Kaggle seed (§C) ✅ **done** (measured
+   aggregates, not yet a trained model). **Next:** a gradient-boosted regressor
+   (LightGBM/XGBoost) over the same 38.4M-row dump, conditioned on
+   day-of-week/month/station-position/upstream-delay — turns one flat average
+   per train into a per-trip prediction. Unlocked NOW, no collector needed.
 
 **Enabling step (non-negotiable): the collector runs from week one.** Without
-it "real ML" stays theoretical; with it, our dataset compounds into the moat.
+it "real ML" stays theoretical for confirmation; with it, our dataset
+compounds into the moat. The delay model is the exception — it can start
+today on data already on disk.
 
 ---
 
@@ -184,22 +197,36 @@ it "real ML" stays theoretical; with it, our dataset compounds into the moat.
 
 - **Step 0 — Backend scaffold** ✅ — FastAPI serving the contract from seed
   fixtures (parity proven with a real server).
-- **Step 1 — Cross-Origin v1** — load §A network + §B gazetteer into
-  Postgres/PostGIS, self-host OSRM, implement nearest-railhead + candidate
-  generation, rank on computable-now factors (time, cost, train density,
-  transfers). *No ML dependency.*
-- **Step 2 — Collector** — daily live-status + PNR snapshots accumulating.
-- **Step 3 — Delay-aware scoring** — priors (Kaggle) → ML as data grows;
-  connection safety from delay distributions.
-- **Step 4 — Confirmation ML** — quota heuristic → model; Redis caching.
-- **Step 5 — Composite ranking + explainability** — full Route objects, fully
-  computed; "why" + Plan B generators.
-- **Phase C** — wire the frontend to the real API (TanStack Query;
-  `VITE_USE_REAL_API=true`).
+- **Step 1 — Cross-Origin v1** ✅ (OSRM deferred) — §A network + §B gazetteer in
+  Postgres/PostGIS, in-memory nearest-railhead + candidate generation, ranking
+  on computable factors. Multi-modal: a direct road option competes with rail.
+  OSRM still pending (road = straight-line×1.3 until deploy).
+- **Step 2 — Collector** ⏸️ DEFERRED — no real users to collect PNR/status from
+  yet; the delay *cold-start* was instead met with a Kaggle year of delays.
+- **Step 3 — Delay-aware scoring** ✅ MEASURED — a full year of observed delays
+  (`train_delays`, 7,024 trains) drives on-time %, connection safety, and the
+  min transfer buffer; transparent model as fallback. Fares also measured from
+  real IRCTC price data. **Next intelligence step: an ML delay *predictor*
+  (per-trip, conditioned on day/season) — see §7.**
+- **Step 4 — Confirmation** 🟡 MODELLED (honest ceiling) — demand-proxy heuristic
+  labelled "est."; becomes an ML model only once the collector lands.
+- **Step 5 — Composite ranking + explainability** ✅ — full Route objects, "why"
+  + date-aware Plan B, reliability breakdown (measured vs est.), seasonal-train
+  date-gating.
+- **Phase C** 🔄 — wire the frontend to the real API (TanStack Query;
+  `VITE_USE_REAL_API=true`), deploy config, OSRM. See PROJECT_LOG Phase C for
+  the ML roadmap.
 
 ---
 
-## 9b. Step 2+3 execution plan (locked 2026-07-04)
+## 9b. Step 2+3 execution plan (locked 2026-07-04) — ✅ DELIVERED 2026-07-08
+
+> **Delivered:** the delay+fare data landed. `train_delays` (7,024 trains, a
+> full year of observations), real IRCTC fares (`app/data/fare_table.json`),
+> real per-stop distances (`app/data/train_cumdist.json`), running-day
+> corrections, seasonal-train gating, and +1,511 trains. ETL:
+> `etl/load_fares.py`, `etl/load_delays.py`, `etl/load_schedule_extra.py`. The
+> collector (item 6 below) remains deferred. Original plan kept for the record.
 
 **Goal:** replace the three heuristic trust numbers — `reliability`,
 `connectionSafetyPct`, per-leg `delayProfile` — with values computed from

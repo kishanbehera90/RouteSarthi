@@ -15,11 +15,17 @@ the roadmap in **[`PHASE_B_PLAN.md`](PHASE_B_PLAN.md)**.
 
 - **Phase A — frontend** ✅ complete (design system, dark mode, 9 screens,
   interactive map, live-journey sim, share).
-- **Phase B — backend engine** 🔄 Step 1 done: cross-origin routing over the
-  **real** rail network (8,600+ trains, May-2026 timetable + gap-fill), served
-  from an in-memory graph (~0.8s cold, instant cached). Real per-class fares,
-  running-day filtering, autocomplete, decision-reasoning, self-drawing map
-  through real stations. Next: **Step 3 delay-aware scoring** (see the plan).
+- **Phase B — backend engine** 🔄 Steps 1–4 done: cross-origin routing over
+  the **real** rail network (10,100+ trains — May-2026 timetable + gap-fill +
+  1,511 trains recovered from a delay dataset), served from an in-memory graph
+  (~0.8s cold, instant cached). Fares, distances, and on-time % are now
+  **measured** (IRCTC price data + a year of real arrival records for 7,000+
+  trains), not just modelled — only seat confirmation is still an honest
+  "(est.)" pending a free PNR feed. Real per-class fares, corrected
+  running-days (fixed a broken "everything is Daily" scrape bug),
+  running-day filtering, autocomplete, decision-reasoning + Plan B, self-drawing
+  map through real stations. Next: **ML delay prediction** (see Phase C in the
+  log) and the collector.
 
 ---
 
@@ -41,8 +47,9 @@ uvicorn app.main:app --reload --port 8000
 - **No `.env`?** It still boots and serves the 3 seed corridors (engine falls
   back). For the full engine you need the team's Supabase `DATABASE_URL`.
 - **First run with a DB** builds `data/processed/graph_cache.pkl` (~30s once,
-  ~0.5s after). To rebuild the DB from scratch (rarely needed):
-  `python etl/download.py && python etl/load_v2.py`.
+  ~0.5s after). To rebuild the DB from scratch (rarely needed) see
+  "Rebuild the database from scratch" below — it's now a multi-step pipeline
+  (timetable → fares → delays → distances/extra trains).
 
 ### 2. Frontend
 ```bash
@@ -54,7 +61,7 @@ npm run dev                                  # http://localhost:5173
 
 ### 3. Tests
 ```bash
-cd backend && .venv\Scripts\python -m pytest -q     # engine + contract (skips engine tests without a DB)
+cd backend && .venv\Scripts\python -m pytest -q     # 35 tests: metrics (pure, always run) + engine/contract (skip without a DB)
 cd frontend && npm run lint && npm run build
 ```
 
@@ -70,15 +77,24 @@ If you don't have the team's `DATABASE_URL`, stand up your own DB and load it:
    pooler** string on Supabase, not the IPv6-only "Direct" one).
 2. **Download the auto-fetchable sources** (datameet stations + GeoNames
    cities): `cd backend && python etl/download.py` → writes `data/raw/`.
-3. **Manually download the current timetable from Kaggle** (login required —
-   Kaggle blocks scripted download) into `backend/data/raw/candidates/`:
-   - `fresh-2026/IRCTC_cleaned.csv` — the May-2026 base timetable
-     (search Kaggle "indian railways schedule 2026", CC0 scrape, ~8.3k trains)
-   - `irctc-2023/schedules.csv` + `price_data.csv` — IRCTC Oct-2023
-     (station-code map, gap-fill trains, fare calibration)
+3. **Manually download the Kaggle datasets** (login required — Kaggle blocks
+   scripted download) into `backend/data/raw/candidates/`. Running
+   `python etl/download.py` lists every file and reports which are missing:
+   - `fresh-2026/IRCTC_cleaned.csv` — the current base timetable the engine
+     runs on (~8.3k trains).
+   - `irctc-2023/price_data.csv` (~124 MB) — real IRCTC fares (fare table).
+   - `delay/combined_delay.csv` (~1 GB), `delay/combined_schedule.csv`,
+     `delay/train_details.csv`, `delay/station_full_names.csv` — a full year of
+     measured delays + a schedule with real per-stop distances.
    *(Exact dataset choices + why are in [`PROJECT_LOG.md`](PROJECT_LOG.md).)*
-4. **Load it:** `python etl/load_v2.py` (~20s). Do **not** run the deprecated
-   `load_all.py` — it breaks the current schema.
+4. **Load it (in order):**
+   - `python -m etl.load_v2` (~20s) — timetable → `trains`/`stops` tables.
+   - `python -m etl.load_fares` — `price_data.csv` → `app/data/fare_table.json`.
+   - `python -m etl.load_delays` (~5 min, streams 1 GB) — `train_delays` table,
+     running-day corrections, seasonal-train detection.
+   - `python -m etl.load_schedule_extra` — real per-stop distances
+     (`app/data/train_cumdist.json`) + ~1,500 extra trains.
+   Do **not** run the deprecated `load_all.py` — it breaks the current schema.
 5. **Verify:** `python etl/verify.py` (row counts + core queries) and
    `python etl/benchmark.py` (duration sanity vs real trains).
 6. **Run:** `uvicorn app.main:app --port 8000`. The first boot builds

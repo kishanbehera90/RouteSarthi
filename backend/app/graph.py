@@ -9,6 +9,7 @@ nearest-railhead and city geocoding (one indexed query each).
 
 Loaded lazily on first use and at server startup (see main.py lifespan).
 """
+import json
 import math
 import os
 import pickle
@@ -18,7 +19,8 @@ import time
 from .db import connect
 
 _CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "processed", "graph_cache.pkl")
-_CACHE_VERSION = 2  # v2: adds TRAIN_DAYS + TRAIN_CLASSES
+_CUMDIST_FILE = os.path.join(os.path.dirname(__file__), "data", "train_cumdist.json")
+_CACHE_VERSION = 4  # v4: adds TRAIN_MONTHS (seasonal/special operating window)
 
 # tunables
 HUB_MIN_TRAINS = 80      # a station busy enough to be a transfer hub
@@ -36,6 +38,9 @@ STATION_IDX: dict[str, list] = {}
 TRAIN_NAME: dict[str, str] = {}
 TRAIN_DAYS: dict[str, str] = {}    # "MON,TUE,…" ("" or missing = assume daily)
 TRAIN_CLASSES: dict[str, str] = {} # "SL,3A,…" for fare-class picking
+TRAIN_DELAY: dict[str, dict] = {}  # train_no -> measured {avgMins,onTimePct,p50,p80,p90,nObs}
+TRAIN_CUMDIST: dict[str, dict] = {}# train_no -> {station_code: cumulative_km} (real distances)
+TRAIN_MONTHS: dict[str, frozenset] = {}  # seasonal trains only -> {operating month ints}
 HUB_TRAINS: dict[str, int] = {}   # hub code -> num_trains (busy stations only)
 STATIONS: list = []               # (code, name, lat, lng, num_trains) for nearest-railhead
 STATION_COORD: dict = {}          # code -> [lng, lat] for map drawing
@@ -52,13 +57,16 @@ def _tmin(s):
     return int(h) * 60 + int(m)
 
 
-def _populate(trains, stations, train_stops, station_idx, hub_trains, train_days=None, train_classes=None):
+def _populate(trains, stations, train_stops, station_idx, hub_trains, train_days=None,
+              train_classes=None, train_delay=None, train_months=None):
     TRAIN_NAME.clear(); STATIONS.clear(); TRAIN_STOPS.clear(); STATION_IDX.clear()
     HUB_TRAINS.clear(); STATION_COORD.clear(); STATION_NAME.clear()
-    TRAIN_DAYS.clear(); TRAIN_CLASSES.clear()
+    TRAIN_DAYS.clear(); TRAIN_CLASSES.clear(); TRAIN_DELAY.clear(); TRAIN_MONTHS.clear()
     TRAIN_NAME.update(trains)
     TRAIN_DAYS.update(train_days or {})
     TRAIN_CLASSES.update(train_classes or {})
+    TRAIN_DELAY.update(train_delay or {})
+    TRAIN_MONTHS.update(train_months or {})
     STATIONS.extend(stations)
     TRAIN_STOPS.update(train_stops)
     STATION_IDX.update(station_idx)
@@ -66,6 +74,47 @@ def _populate(trains, stations, train_stops, station_idx, hub_trains, train_days
     for code, _name, lat, lng, _n in stations:
         STATION_COORD[code] = [lng, lat]
         STATION_NAME[code] = _name
+    _load_cumdist()
+
+
+def is_seasonal(train_no):
+    """True for special/seasonal trains (Magh Mela, festival specials) that only
+    run in a limited window — they must be date-gated in search."""
+    return train_no in TRAIN_MONTHS
+
+
+def runs_in_month(train_no, month):
+    """Whether a train operates in the given calendar month. Regular trains
+    (not seasonal) always pass. Seasonal trains pass only in their window; when
+    `month` is None (undated search) a seasonal train is hidden."""
+    if train_no not in TRAIN_MONTHS:
+        return True
+    if month is None:
+        return False
+    return month in TRAIN_MONTHS[train_no]
+
+
+def _load_cumdist():
+    """Real per-stop cumulative distances (etl/load_schedule_extra). Local file,
+    so it's loaded fresh outside the DB cache."""
+    TRAIN_CUMDIST.clear()
+    try:
+        with open(_CUMDIST_FILE, encoding="utf-8") as f:
+            TRAIN_CUMDIST.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+
+
+def rail_km(train_no, from_code, to_code):
+    """Exact routed km between two stops of a train from measured cumulative
+    distances, or None if we can't (missing train/stop)."""
+    d = TRAIN_CUMDIST.get(train_no)
+    if not d:
+        return None
+    a, b = d.get(from_code), d.get(to_code)
+    if a is None or b is None:
+        return None
+    return abs(b - a)
 
 
 def _load_from_db(attempts=3):
@@ -75,15 +124,31 @@ def _load_from_db(attempts=3):
     for attempt in range(1, attempts + 1):
         try:
             trains, stations, train_stops, station_idx, hub_trains = {}, [], {}, {}, {}
-            train_days, train_classes = {}, {}
+            train_days, train_classes, train_delay, train_months = {}, {}, {}, {}
             with connect() as conn, conn.cursor() as cur:
-                cur.execute("SELECT number, name, days_of_week, classes FROM trains;")
-                for num, name, days, classes in cur.fetchall():
+                try:
+                    cur.execute("SELECT number, name, days_of_week, classes, operating_months FROM trains;")
+                    rows = cur.fetchall()
+                except Exception:  # noqa: BLE001 — column may not exist yet (pre-seasonal ETL)
+                    conn.rollback()
+                    cur.execute("SELECT number, name, days_of_week, classes FROM trains;")
+                    rows = [(a, b, c, d, None) for a, b, c, d in cur.fetchall()]
+                for num, name, days, classes, months in rows:
                     trains[num] = name
                     if days:
                         train_days[num] = days
                     if classes:
                         train_classes[num] = classes
+                    if months:
+                        train_months[num] = frozenset(int(m) for m in months.split(",") if m.strip())
+                try:
+                    cur.execute("SELECT train_number, avg_delay, p50, p80, p90, on_time_pct, n_obs "
+                                "FROM train_delays;")
+                    for tn, avg, p50, p80, p90, ontime, n in cur.fetchall():
+                        train_delay[tn] = {"avgMins": round(avg or 0), "onTimePct": round(ontime or 0),
+                                           "p50": p50, "p80": p80, "p90": p90, "nObs": n}
+                except Exception as e:  # noqa: BLE001 — table may not exist yet
+                    print("train_delays not loaded:", e)
                 cur.execute("SELECT code, name, lat, lng, num_trains FROM stations WHERE lat IS NOT NULL;")
                 for code, name, lat, lng, n in cur.fetchall():
                     stations.append((code, name, float(lat), float(lng), n or 0))
@@ -100,7 +165,8 @@ def _load_from_db(attempts=3):
                     idx = len(lst)
                     lst.append((sc, _tmin(arr), _tmin(dep), day if day is not None else 1))
                     station_idx.setdefault(sc, []).append((tn, idx))
-            return trains, stations, train_stops, station_idx, hub_trains, train_days, train_classes
+            return (trains, stations, train_stops, station_idx, hub_trains,
+                    train_days, train_classes, train_delay, train_months)
         except Exception as e:  # noqa: BLE001
             last_err = e
             print(f"graph DB load attempt {attempt} failed: {e}")
@@ -332,7 +398,16 @@ def one_transfer(boards, alights, day3=None):
             # conservative (we may miss overnight connections, not invent bad
             # ones). Proper day-aware connections land with Step 3 delay work.
             wait = (dep2 - arr_hub) % 1440
-            if wait < CONN_MIN_BUFFER or wait > CONN_MAX_WAIT:
+            # The buffer must cover not just a floor but the incoming train's
+            # TYPICAL delay: if train 1 is usually p50 min late, a shorter buffer
+            # means you miss the connection more often than not. Use measured p50
+            # when we have it (capped so a chronically-late train doesn't kill
+            # every transfer through the hub).
+            d1 = TRAIN_DELAY.get(t1)
+            min_buf = CONN_MIN_BUFFER
+            if d1 and d1.get("p50") is not None:
+                min_buf = max(CONN_MIN_BUFFER, min(round(d1["p50"]), 90))
+            if wait < min_buf or wait > CONN_MAX_WAIT:
                 continue
             for j in range(idx + 1, len(stops)):
                 s = stops[j]

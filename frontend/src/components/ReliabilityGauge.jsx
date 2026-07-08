@@ -17,7 +17,17 @@ function BreakdownBars({ items }) {
         return (
           <div key={it.label}>
             <div className="flex items-center justify-between text-xs">
-              <span className="text-muted">{it.label}</span>
+              <span className="flex items-center gap-1.5 text-muted">
+                {it.label}
+                {it.source === 'measured' && (
+                  <span
+                    className="rounded-full bg-safe-50 px-1.5 py-px text-[10px] font-semibold text-safe-600"
+                    title="Based on a full year of real arrival records"
+                  >
+                    measured
+                  </span>
+                )}
+              </span>
               <span className="font-semibold tabular-nums" style={{ color: c }}>
                 {it.value}%
               </span>

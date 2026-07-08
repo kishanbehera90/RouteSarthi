@@ -531,6 +531,60 @@ Repeat searches: **~0 ms** (0.00–0.02 ms). ✅
 
 ---
 
+## P15 — Real data exposed three bugs a model could hide (user-caught batch)
+
+- **Background:** P13 built the modelled reliability/delay/fare layer; the very
+  next session swapped in **real data** for fares, distances, and delays (IRCTC
+  price data + a year of measured arrivals for 7,024 trains). Good news: it
+  worked. Side effect: real numbers immediately exposed three latent bugs that
+  flat/uniform modelled numbers had been masking. All three caught by the user
+  eyeballing a live route card.
+- **Bug 1 — Plan B suggested a train that had already left.** A route departing
+  21:30 showed "Miss it? Next best: … departing 13:45" — a train from *earlier
+  that day*.
+  - Root cause: Plan B was `routes[i + 1]` — literally "the next route in the
+    ranked list" — with zero regard for departure time. It happened to look
+    plausible before because routes were homogeneous; once fares/times started
+    varying realistically, the mismatch became obvious.
+  - Fix: `_first_train_dep_min()` extracts each route's boarding time; Plan B
+    now picks the alternative departing **soonest after** the current route,
+    falling back to delay/hub advice if nothing later exists.
+  - Verified live on the exact reported route (`5002 GKP JI MAGH MELA`,
+    21:30 → Plan B now correctly reads "23:15").
+- **Bug 2 — connection buffers didn't account for the incoming train's own
+  lateness.** `graph.one_transfer` accepted any transfer with a flat ≥30-min
+  buffer, even for trains that are *routinely* 40+ min late — so a "safe"
+  30-min connection could statistically fail more often than it succeeded.
+  - Fix: minimum buffer is now `max(30, min(measured p50 delay, 90))` — a train
+    with no measured history still gets the 30-min floor; a chronically-late
+    one needs a bigger buffer to qualify as a transfer at all. Scanned 8
+    cross-country corridors after the fix: **0 of 27** measured transfers
+    violate the invariant.
+- **Bug 3 — premium trains showed classes they don't sell.** The `classes`
+  column is a generic per-train field that often lists every class in
+  existence; a Rajdhani (AC-only) was showing Sleeper, a Vande Bharat
+  (chair-car) was showing 1A.
+  - Fix: `_offered_classes()` restricts premium trains to their real sold
+    classes by brand — AC-sleeper premiums (Rajdhani/Duronto/Humsafar/Garib
+    Rath) → 1A/2A/3A only; chair-car premiums (Shatabdi/Vande Bharat/
+    Gatimaan/Tejas *Express*) → CC/EC/2S only.
+  - **The gotcha inside the gotcha:** naive brand matching breaks on
+    `"TEJAS RAJ"` (Tejas *Rajdhani* — AC-sleeper, despite "Tejas") and
+    `"VANDE BHARAT SL"` (the new Vande Bharat *Sleeper* — AC-sleeper, despite
+    "Vande"). A test written against the naive rule caught this immediately
+    (`27575 VANDE BHARAT SL` failed with `SL` in an "AC-only" assertion) —
+    fixed by excluding the `RAJ`/`SL` tokens from the sitting-class match.
+- **Why this matters as a pattern:** modelled/uniform data is forgiving —
+  every route looks roughly the same, so ordering and edge-case bugs don't
+  stand out. The moment real, *varying* data went in, three genuine logic bugs
+  became visible in one screenshot. Lesson: don't fully trust a feature tested
+  only against synthetic/uniform data — real data is also a bug-finding tool.
+- **Impact:** +3 regression tests locking each invariant (Plan B departs later,
+  buffer covers p50 delay, premium classes are brand-correct) → 34/34 passing.
+  All three verified against the live API and in-browser.
+
+---
+
 ## Template for future entries
 ```
 ## P# — <short title>

@@ -80,6 +80,19 @@ def _hhmm(m):
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
+def _first_train_dep_min(route):
+    """Clock-minute (0–1439) the traveller boards the FIRST train of a route, or
+    None for a road-only route. Used to order 'miss it → next train' fallbacks."""
+    for l in route.get("legs", []):
+        if l.get("mode") == "train" and l.get("depart"):
+            try:
+                hh, mm = l["depart"].split(":")
+                return int(hh) * 60 + int(mm)
+            except (ValueError, AttributeError):
+                return None
+    return None
+
+
 _GEOCODE_CACHE = {}
 
 # Well-known places whose common spelling differs from the gazetteer's.
@@ -170,7 +183,12 @@ def _fare_road(km):
     return max(20, round(km * ROAD_FARE_PER_KM))
 
 
-def _rail_km(bcode, acode, in_train_min):
+def _rail_km(tn, bcode, acode, in_train_min):
+    # Prefer REAL routed km from the schedule's per-stop cumulative distances;
+    # fall back to haversine × factor, then to a speed-based proxy.
+    real = graph.rail_km(tn, bcode, acode) if tn else None
+    if real:
+        return real
     b, a = graph.STATION_COORD.get(bcode), graph.STATION_COORD.get(acode)
     if b and a:
         return graph._haversine_km(b[1], b[0], a[1], a[0]) * ROUTE_KM_FACTOR
@@ -193,13 +211,38 @@ CLASS_LABEL = {"SL": "Sleeper", "3A": "AC 3-tier", "2A": "AC 2-tier", "1A": "AC 
 CLASS_ORDER = ["2S", "SL", "CC", "3A", "2A", "1A"]
 
 
+def _offered_classes(tn):
+    """The coach classes a train *actually* offers, cleaning up the generic
+    `classes` column (which often lists every class under the sun). Premium
+    trains are fully reserved with a fixed profile:
+      • chair-car day trains (Shatabdi / Vande Bharat / Gatimaan / Tejas *Express*)
+        sell only sitting classes (CC/EC/2S);
+      • AC-sleeper premiums (Rajdhani / Duronto / Humsafar / Garib Rath, incl.
+        *Tejas Rajdhani*) sell only AC sleeper (1A/2A/3A).
+    Note the RAJ guard: "TEJAS RAJDHANI" is an AC-sleeper train, not chair-car.
+    Non-premium trains keep their listed classes untouched."""
+    have = [x.strip() for x in graph.TRAIN_CLASSES.get(tn, "").split(",") if x.strip()]
+    if metrics.infer_tier(tn, graph.TRAIN_NAME.get(tn)) != "premium":
+        return have
+    name = (graph.TRAIN_NAME.get(tn) or "").upper()
+    tokens = name.split()
+    # chair-car day trains — but NOT the sleeper variants (Vande Bharat SL,
+    # Tejas Rajdhani), which are AC-sleeper despite the shared brand name.
+    is_sitting = ("SHATABDI" in name or "GATIMAAN" in name
+                  or ("VANDE" in name and "SL" not in tokens)
+                  or ("TEJAS" in name and "RAJ" not in tokens))
+    allow = ({"CC", "EC", "2S", "EA", "EV"} if is_sitting
+             else {"1A", "2A", "3A", "3E", "EA"})   # AC-sleeper premium
+    return [c for c in have if c in allow] or have   # never strip to empty
+
+
 def _class_fares(tn, bcode, acode, in_train_min):
     """Per-class fares for the classes this train actually offers, cheapest
     first: [{code, label, fareInr}]. Fare = calibrated per-km base + real
     reservation + superfast surcharge (premium/superfast trains) + 5% GST (AC)."""
-    km = _rail_km(bcode, acode, in_train_min)
+    km = _rail_km(tn, bcode, acode, in_train_min)
     tier = metrics.infer_tier(tn, graph.TRAIN_NAME.get(tn))
-    have = {x.strip() for x in graph.TRAIN_CLASSES.get(tn, "").split(",")}
+    have = set(_offered_classes(tn))
     out = []
     for c in CLASS_ORDER:
         if c in have and c in FARE_RATE:
@@ -281,11 +324,24 @@ def _path_stops(codes):
     return names if len(names) >= 2 else None
 
 
+_MONTH_ABBR = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+               7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
+
+
+def _season_label(tn):
+    """'Seasonal · runs in Jan' for special trains, else None. Only shown when
+    the train surfaces at all (i.e. the user searched within its window)."""
+    ms = graph.TRAIN_MONTHS.get(tn)
+    if not ms:
+        return None
+    return "Seasonal · runs in " + ", ".join(_MONTH_ABBR[m] for m in sorted(ms))
+
+
 def _route_classes(*train_nos):
     """Union of coach classes across a route's trains, in fare order."""
     have = set()
     for tn in train_nos:
-        have.update(x.strip() for x in graph.TRAIN_CLASSES.get(tn, "").split(",") if x.strip())
+        have.update(_offered_classes(tn))
     return [c for c in CLASS_ORDER if c in have] + sorted(have - set(CLASS_ORDER))
 
 
@@ -331,6 +387,10 @@ def search(from_place, to_place, pref="confirmed", date=None):
     # --- single-train candidates (best per train) ---
     best_by_train = {}
     for c in graph.single_train(o_heads, d_heads, day3):
+        # Seasonal/special trains (Magh Mela etc.) only surface when the travel
+        # date falls in their operating window — and are hidden on an undated search.
+        if not graph.runs_in_month(c["train"], month):
+            continue
         b, a = o_heads[c["board"]], d_heads[c["alight"]]
         if not _useful(b, a, ocoord, dcoord):
             continue
@@ -343,6 +403,8 @@ def search(from_place, to_place, pref="confirmed", date=None):
     # --- one-transfer cross-origin (when few/no through trains) ---
     if len(routes) < 3:
         for j in graph.one_transfer(o_heads, d_heads, day3):
+            if not (graph.runs_in_month(j["t1"], month) and graph.runs_in_month(j["t2"], month)):
+                continue
             b, a = o_heads[j["board"]], d_heads[j["alight"]]
             if not _useful(b, a, ocoord, dcoord):
                 continue
@@ -360,15 +422,28 @@ def search(from_place, to_place, pref="confirmed", date=None):
     road = [r for r in ranked if r.get("roadOnly")]
     rail = [r for r in ranked if not r.get("roadOnly")][:15]
     routes = _rank(rail + road, pref)[:16]
-    # Plan B: each route's fallback is the next-ranked alternative.
-    for i, r in enumerate(routes):
-        nxt = routes[i + 1] if i + 1 < len(routes) else None
-        if nxt:
-            tleg = next((l for l in nxt["legs"] if l["mode"] == "train"), None)
-            if tleg:
-                h = nxt["totalTimeMins"]
-                r["planB"] = (f"Miss it? Next best: {tleg['name']} departing {tleg['depart']} "
-                              f"— ₹{nxt['totalFareInr']}, {h // 60}h {h % 60}min door to door.")
+    # Plan B: "if you miss this train, the next one you could catch" — must be an
+    # alternative that departs LATER than this route (an earlier train is already
+    # gone). If none departs later, keep the route's own planB (delay/hub advice).
+    for r in routes:
+        t = _first_train_dep_min(r)
+        if t is None:
+            continue                       # road-only route keeps its own planB
+        best = None                        # (departure_gap, alt_route)
+        for alt in routes:
+            if alt is r or alt.get("roadOnly"):
+                continue
+            t2 = _first_train_dep_min(alt)
+            if t2 is None or t2 <= t:       # same or earlier departure — not a fallback
+                continue
+            if best is None or (t2 - t) < best[0]:
+                best = (t2 - t, alt)
+        if best:
+            alt = best[1]
+            tleg = next((l for l in alt["legs"] if l["mode"] == "train"), None)
+            h = alt["totalTimeMins"]
+            r["planB"] = (f"Miss it? Next train: {tleg['name']} departing {tleg['depart']} "
+                          f"— ₹{alt['totalFareInr']}, {h // 60}h {h % 60}min door to door.")
     if len(ROUTE_STORE) > _ROUTE_STORE_MAX:
         ROUTE_STORE.clear()
     for r in routes:
@@ -479,8 +554,9 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
     first_km, last_km = b["km"], a["km"]
     bc, ac = _coord(b), _coord(a)
     halts = len(c.get("path") or []) - 2 if c.get("path") else None
-    rail_km = _rail_km(b["code"], a["code"], c["in_train"])
-    dprofile = metrics.leg_delay_profile(c["train"], c["name"], rail_km, halts)
+    rail_km = _rail_km(c["train"], b["code"], a["code"], c["in_train"])
+    dprofile = metrics.leg_delay_profile(c["train"], c["name"], rail_km, halts,
+                                         measured=graph.TRAIN_DELAY.get(c["train"]))
     conf_pct, conf_state = metrics.confirmation_estimate(
         _route_classes(c["train"]), dprofile["tier"], ctx[0], ctx[1])
     reliability = metrics.route_reliability(dprofile["onTimePct"], None, 0, first_km, conf_pct)
@@ -494,7 +570,9 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
                  "durationMins": c["in_train"],
                  "classFares": _class_fares(c["train"], b["code"], a["code"], c["in_train"]),
                  "fareInr": _fare_rail(c["train"], b["code"], a["code"], c["in_train"]),
-                 "confirmation": conf_state, "delayProfile": {"avgMins": dprofile["avgMins"], "onTimePct": dprofile["onTimePct"]},
+                 "confirmation": conf_state,
+                 "delayProfile": {"avgMins": dprofile["avgMins"], "onTimePct": dprofile["onTimePct"],
+                                  "source": dprofile["delaySource"], "p90": dprofile.get("p90")},
                  "fromCoords": bc, "toCoords": ac, "pathCoords": _path_coords(c.get("path")),
                  "days": _days_label(c["train"]), "stops": _path_stops(c.get("path")),
                  "halts": halts}
@@ -506,6 +584,10 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
 
     is_cross = first_km > 20
     ot = dprofile["onTimePct"]
+    ot_measured = dprofile["delaySource"] == "measured"
+    ot_label = "On-time record" if ot_measured else "On-time (est.)"
+    ot_phrase = (f" ~{ot}% on-time over a year of real runs" if ot_measured
+                 else f" ~{ot}% on-time (est.)")
     return {
         "id": f"{c['train']}-{b['code']}-{a['code']}",
         "type": "cross-origin" if is_cross else "direct",
@@ -522,10 +604,11 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
                       "from": b["name"], "to": a["name"],
                       "depart": _hhmm(c["dep"]), "arrive": _hhmm(c["arr"]),
                       "days": _days_label(c["train"]), "halts": train_leg["halts"],
+                      "seasonal": _season_label(c["train"]),
                       "classFares": train_leg["classFares"]},
         "reliabilityBreakdown": [
             {"label": "Confirmation (est.)", "value": conf_pct, "weight": 50},
-            {"label": "On-time (est.)", "value": ot, "weight": 30},
+            {"label": ot_label, "value": ot, "weight": 30, "source": dprofile["delaySource"]},
             {"label": "First-mile access", "value": max(30, round(100 - first_km / 2)), "weight": 20},
         ],
         "why": (f"{b['name']} ({round(first_km)} km away) is a far better-connected railhead "
@@ -533,8 +616,13 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
                 if is_cross else
                 f"Direct train from {b['name']} ({b['trains']} trains/day serve this station) — "
                 f"no change of train.") +
-               f" ~{ot}% on-time, ~{conf_pct}% seat-confirm (est.).",
-        "planB": None, "legs": legs,
+               ot_phrase + f", ~{conf_pct}% seat-confirm (est.).",
+        "planB": (f"9 in 10 runs of this train reach within ~{round(dprofile['p90'])} min of "
+                  f"schedule (measured) — keep that buffer for any onward connection."
+                  if ot_measured and dprofile.get("p90") else
+                  (f"Seats look tight (~{conf_pct}% confirm, est.) — have a road fallback "
+                   f"or nearby-date option ready." if conf_pct < 55 else None)),
+        "legs": legs,
     }
 
 
@@ -542,12 +630,12 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
     legs = []
     first_km, last_km = b["km"], a["km"]
     bc, ac, hc = _coord(b), _coord(a), _hub_coord(j["hub"])
-    km1 = _rail_km(b["code"], j["hub"], j["it1"])
-    km2 = _rail_km(j["hub"], a["code"], j["it2"])
+    km1 = _rail_km(j["t1"], b["code"], j["hub"], j["it1"])
+    km2 = _rail_km(j["t2"], j["hub"], a["code"], j["it2"])
     halts1 = len(j.get("path1") or []) - 2 if j.get("path1") else None
     halts2 = len(j.get("path2") or []) - 2 if j.get("path2") else None
-    dp1 = metrics.leg_delay_profile(j["t1"], j["t1name"], km1, halts1)
-    dp2 = metrics.leg_delay_profile(j["t2"], j["t2name"], km2, halts2)
+    dp1 = metrics.leg_delay_profile(j["t1"], j["t1name"], km1, halts1, measured=graph.TRAIN_DELAY.get(j["t1"]))
+    dp2 = metrics.leg_delay_profile(j["t2"], j["t2name"], km2, halts2, measured=graph.TRAIN_DELAY.get(j["t2"]))
     if first_km > 2:
         legs.append(_road_leg(f"{j['t1']}-fm", frm, b["name"], first_km, ocoord, bc))
         legs.append({"id": f"{j['t1']}-c0", "mode": "connection", "connectionSafetyPct": None,
@@ -557,7 +645,8 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
             "arrive": _hhmm(j["arr1"]) if j.get("arr1") is not None else None,
             "durationMins": j["it1"], "classFares": _class_fares(j["t1"], b["code"], j["hub"], j["it1"]),
             "fareInr": _fare_rail(j["t1"], b["code"], j["hub"], j["it1"]), "confirmation": "confirmed",
-            "delayProfile": {"avgMins": dp1["avgMins"], "onTimePct": dp1["onTimePct"]},
+            "delayProfile": {"avgMins": dp1["avgMins"], "onTimePct": dp1["onTimePct"],
+                             "source": dp1["delaySource"], "p90": dp1.get("p90")},
             "fromCoords": bc, "toCoords": hc, "pathCoords": _path_coords(j.get("path1")),
             "days": _days_label(j["t1"]), "stops": _path_stops(j.get("path1")), "halts": halts1}
     legs.append(leg1)
@@ -570,7 +659,8 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
             "from": j["hub"], "to": a["name"], "depart": _hhmm(j["dep2"]), "arrive": _hhmm(j["arr2"]),
             "durationMins": j["it2"], "classFares": _class_fares(j["t2"], j["hub"], a["code"], j["it2"]),
             "fareInr": _fare_rail(j["t2"], j["hub"], a["code"], j["it2"]), "confirmation": "confirmed",
-            "delayProfile": {"avgMins": dp2["avgMins"], "onTimePct": dp2["onTimePct"]},
+            "delayProfile": {"avgMins": dp2["avgMins"], "onTimePct": dp2["onTimePct"],
+                             "source": dp2["delaySource"], "p90": dp2.get("p90")},
             "fromCoords": hc, "toCoords": ac, "pathCoords": _path_coords(j.get("path2")),
             "days": _days_label(j["t2"]), "stops": _path_stops(j.get("path2")), "halts": halts2}
     legs.append(leg2)
@@ -580,6 +670,8 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
         legs.append(_road_leg(f"{j['t2']}-lm", a["name"], to, last_km, ac, dcoord))
 
     ot = min(dp1["onTimePct"], dp2["onTimePct"])   # weakest leg
+    ot_measured = dp1["delaySource"] == "measured" and dp2["delaySource"] == "measured"
+    ot_label = "On-time record" if ot_measured else "On-time (est.)"
     conf_pct, conf_state = metrics.confirmation_estimate(
         _route_classes(j["t1"], j["t2"]), max(dp1["tier"], dp2["tier"], key=lambda t: {"premium": 3, "superfast": 2, "express": 1, "passenger": 0}[t]),
         ctx[0], ctx[1])
@@ -596,18 +688,24 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
         "acAvailable": _ac_available(j["t1"], j["t2"]),
         "classes": _route_classes(j["t1"], j["t2"]),
         "onTimePct": ot,
-        "mainTrain": (lambda m: {"trainNo": m["trainNo"], "name": m["name"], "from": m["from"],
-                                 "to": m["to"], "depart": m["depart"], "arrive": m["arrive"],
-                                 "days": m.get("days"), "halts": m.get("halts"),
-                                 "classFares": m["classFares"]})(leg1 if j["it1"] >= j["it2"] else leg2),
+        "mainTrain": (lambda m, tn: {"trainNo": m["trainNo"], "name": m["name"], "from": m["from"],
+                                     "to": m["to"], "depart": m["depart"], "arrive": m["arrive"],
+                                     "days": m.get("days"), "halts": m.get("halts"),
+                                     "seasonal": _season_label(tn),
+                                     "classFares": m["classFares"]})(
+            *(( leg1, j["t1"]) if j["it1"] >= j["it2"] else (leg2, j["t2"]))),
         "reliabilityBreakdown": [
             {"label": "Confirmation (est.)", "value": conf_pct, "weight": 38},
             {"label": "Connection safety (est.)", "value": safety or 60, "weight": 30},
-            {"label": "On-time (est.)", "value": ot, "weight": 20},
+            {"label": ot_label, "value": ot, "weight": 20,
+             "source": "measured" if ot_measured else "modelled"},
         ],
         "why": (f"No through train — but {j['hub']} ({j['hub_trains']} trains/day) links the two "
                 f"sides with a {j['wait']}-min connection (~{safety or 60}% safe, est.)."),
-        "planB": None, "legs": legs,
+        "planB": (f"If the first train is late, {j['hub']} runs {j['hub_trains']} trains/day, so "
+                  f"a missed connection isn't a dead end — you can re-book onward there."
+                  if (safety or 60) < 75 else None),
+        "legs": legs,
     }
 
 
@@ -646,7 +744,13 @@ def _rank(routes, pref):
         return sorted(routes, key=lambda r: r["totalFareInr"])
     if pref == "fastest":
         return sorted(routes, key=lambda r: r["totalTimeMins"])
-    return sorted(routes, key=lambda r: (r["transfers"], -r["reliability"], r["totalTimeMins"]))
+    # Confirmed / default: fewest transfers, then most reliable. On a reliability
+    # TIE, prefer a friction-free direct board over a cross-origin one — don't
+    # send the traveller on a road trip to another town's railhead when their own
+    # station offers an equally-reliable train. Time breaks any remaining tie.
+    return sorted(routes, key=lambda r: (r["transfers"], -r["reliability"],
+                                         1 if r.get("type") == "cross-origin" else 0,
+                                         r["totalTimeMins"]))
 
 
 def _corridor(o, d):

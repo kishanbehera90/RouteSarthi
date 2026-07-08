@@ -15,9 +15,11 @@ export default function ReliabilityBadge({ score, className }) {
         t.cls,
         className
       )}
+      title="Estimated reliability — blends measured on-time record with modelled seat-confirmation and connection safety"
     >
       <span className="tabular-nums">{score}%</span>
       <span className="opacity-80">{t.label}</span>
+      <span className="font-normal opacity-50">est.</span>
     </span>
   )
 }
