@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Columns2, SlidersHorizontal, ArrowRight, Compass } from 'lucide-react'
+import { Columns2, SlidersHorizontal, ArrowRight, Compass, CalendarClock } from 'lucide-react'
 import RouteCard from '../components/RouteCard'
 import DecisionReasoning from '../components/DecisionReasoning'
 import { ResultsSkeleton } from '../components/Skeleton'
@@ -11,7 +11,7 @@ import ArrowButton from '../components/ArrowButton'
 import BackLink from '../components/BackLink'
 import { corridors } from '../data/routes'
 import { useJourneyStore } from '../store/useJourneyStore'
-import { isLateNightTime } from '../lib/utils'
+import { isLateNightTime, matchesDepartureWindow } from '../lib/utils'
 
 export default function Results() {
   const [params, setParams] = useSearchParams()
@@ -22,7 +22,7 @@ export default function Results() {
 
   const filters = useJourneyStore((s) => s.filters)
 
-  const [state, setState] = useState({ loading: true, corridor: null, routes: [] })
+  const [state, setState] = useState({ loading: true, corridor: null, routes: [], demandAdvisory: null })
   const [showAll, setShowAll] = useState(false)
 
   useEffect(() => {
@@ -34,7 +34,8 @@ export default function Results() {
     )
       .then((res) => res.json())
       .then((data) => {
-        if (!cancelled) setState({ loading: false, corridor: data.corridor, routes: data.routes })
+        if (!cancelled)
+          setState({ loading: false, corridor: data.corridor, routes: data.routes, demandAdvisory: data.demandAdvisory })
       })
     return () => {
       cancelled = true
@@ -56,6 +57,12 @@ export default function Results() {
         if (lastLeg && isLateNightTime(lastLeg.arrive)) return false
       }
       if (filters.travelClass && Array.isArray(r.classes) && !r.classes.includes(filters.travelClass)) return false
+      if (filters.departureWindows.length) {
+        // First train leg's departure — no filter selected leaves this
+        // branch unreached, so behavior is byte-for-byte unchanged today.
+        const firstTrain = r.legs.find((l) => l.mode === 'train' && l.depart)
+        if (firstTrain && !matchesDepartureWindow(firstTrain.depart, filters.departureWindows)) return false
+      }
       return true
     })
   }, [state.routes, filters])
@@ -145,6 +152,16 @@ export default function Results() {
           Compare
         </Link>
       </div>
+
+      {state.demandAdvisory && (
+        <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-caution-100 bg-caution-50 px-4 py-3">
+          <CalendarClock className="mt-0.5 h-4 w-4 shrink-0 text-caution-600" />
+          <p className="text-sm text-caution-600">
+            <span className="font-semibold">{state.demandAdvisory.label} — peak travel.</span>{' '}
+            {state.demandAdvisory.note}
+          </p>
+        </div>
+      )}
 
       {state.corridor.reasoning && (
         <div className="mt-4">

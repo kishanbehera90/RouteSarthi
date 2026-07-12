@@ -7,6 +7,49 @@ import ConfirmationProbability from './ConfirmationProbability'
 import ClassFares from './ClassFares'
 import { formatFare } from '../lib/utils'
 
+// How the on-time / delay number for a leg was produced. The backend tags each
+// train leg's delayProfile.source; we surface it so a "predicted for your date"
+// number is never mistaken for a flat historical average (or a rough estimate).
+const DELAY_SOURCE = {
+  predicted: {
+    chip: 'Predicted',
+    chipClass: 'bg-brand-50 text-brand-600',
+    tip: 'Estimated for your travel date by a model trained on a year of real arrivals — conditioned on day of week, month and where you get off.',
+    line: (p) => `Predicted ~${p.onTimePct}% on-time · ~${p.avgMins} min delay on your date`,
+  },
+  measured: {
+    chip: 'Measured',
+    chipClass: 'bg-safe-50 text-safe-600',
+    tip: "From a full year of this train's real arrivals.",
+    line: (p) => `Historically ${p.onTimePct}% on time · avg delay ${p.avgMins} min`,
+  },
+  modelled: {
+    chip: 'Estimate',
+    chipClass: 'bg-sunken text-faint',
+    tip: 'No historical record for this train yet — a rough estimate from its class, distance and number of stops.',
+    line: (p) => `Est. ~${p.onTimePct}% on-time · ~${p.avgMins} min delay`,
+  },
+}
+
+function DelayLine({ profile }) {
+  // Mock corridors carry no source → read as historical (measured).
+  const meta = DELAY_SOURCE[profile.source] || DELAY_SOURCE.measured
+  return (
+    <div className="mt-1">
+      <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-faint">
+        <span
+          className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${meta.chipClass}`}
+          title={meta.tip}
+        >
+          {meta.chip}
+        </span>
+        {meta.line(profile)}
+      </p>
+      <OnTimeBar pct={profile.onTimePct} />
+    </div>
+  )
+}
+
 function OnTimeBar({ pct }) {
   const color =
     pct >= 80 ? 'var(--color-safe-500)' : pct >= 60 ? 'var(--color-caution-500)' : 'var(--color-risk-500)'
@@ -88,14 +131,7 @@ function LegRow({ leg }) {
             )}
           </div>
         )}
-        {leg.delayProfile && (
-          <div className="mt-1">
-            <p className="text-xs text-faint">
-              Historically {leg.delayProfile.onTimePct}% on time · avg delay {leg.delayProfile.avgMins} min
-            </p>
-            <OnTimeBar pct={leg.delayProfile.onTimePct} />
-          </div>
-        )}
+        {leg.delayProfile && <DelayLine profile={leg.delayProfile} />}
         {leg.confirmation === 'waitlisted' && leg.clearProbabilityPct != null && (
           <ConfirmationProbability
             waitlistPosition={leg.waitlistPosition}

@@ -1,17 +1,18 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { LogOut, User } from 'lucide-react'
 import { useAuthStore } from '../store/useAuthStore'
+import { useJourneyStore } from '../store/useJourneyStore'
 
 export default function AuthMenu({ tone = 'light' }) {
   const [open, setOpen] = useState(false)
-  const navigate = useNavigate()
-  const { isAuthenticated, user, logout } = useAuthStore()
+  const { status, user, logout } = useAuthStore()
+  const resetPersonalization = useJourneyStore((s) => s.resetPersonalization)
 
   const linkTone =
     tone === 'dark' ? 'text-white/80 hover:text-white' : 'text-brand-700 hover:text-content'
 
-  if (!isAuthenticated) {
+  if (status !== 'authenticated') {
     return (
       <Link to="/login" className={`text-sm font-semibold ${linkTone}`}>
         Log in
@@ -38,8 +39,13 @@ export default function AuthMenu({ tone = 'light' }) {
             type="button"
             onClick={() => {
               setOpen(false)
+              // Clear both stores before navigating — a different user
+              // logging in on the same tab must never see this user's
+              // personalization, even for a frame. Hard navigation (not
+              // router navigate) guarantees a clean in-memory reset.
+              resetPersonalization()
               logout()
-              navigate('/')
+              window.location.href = '/'
             }}
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-risk-600 hover:bg-risk-50"
           >

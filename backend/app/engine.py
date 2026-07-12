@@ -236,27 +236,56 @@ def _offered_classes(tn):
     return [c for c in have if c in allow] or have   # never strip to empty
 
 
-def _class_fares(tn, bcode, acode, in_train_min):
+def _class_fares(tn, bcode, acode, in_train_min, demand_score=0):
     """Per-class fares for the classes this train actually offers, cheapest
     first: [{code, label, fareInr}]. Fare = calibrated per-km base + real
-    reservation + superfast surcharge (premium/superfast trains) + 5% GST (AC)."""
+    reservation + superfast surcharge (premium/superfast trains) + 5% GST (AC).
+    On peak travel dates a flexi-fare multiplier lifts PREMIUM trains only
+    (regulated fares are fixed by law and never move)."""
     km = _rail_km(tn, bcode, acode, in_train_min)
     tier = metrics.infer_tier(tn, graph.TRAIN_NAME.get(tn))
+    mult = metrics.flexi_fare_multiplier(tier, demand_score)
     have = set(_offered_classes(tn))
     out = []
     for c in CLASS_ORDER:
         if c in have and c in FARE_RATE:
             out.append({"code": c, "label": CLASS_LABEL[c],
-                        "fareInr": metrics.rail_fare(c, FARE_RATE[c], km, tier)})
+                        "fareInr": metrics.rail_fare(c, FARE_RATE[c], km, tier, mult)})
     if not out:  # trains with unknown/other classes -> a sleeper-rate estimate
         out.append({"code": "SL", "label": CLASS_LABEL["SL"],
-                    "fareInr": metrics.rail_fare("SL", FARE_RATE["SL"], km, tier)})
+                    "fareInr": metrics.rail_fare("SL", FARE_RATE["SL"], km, tier, mult)})
     return sorted(out, key=lambda x: x["fareInr"])
 
 
-def _fare_rail(tn, bcode, acode, in_train_min):
+def _fare_rail(tn, bcode, acode, in_train_min, demand_score=0):
     """Cheapest available class — the headline fare for a leg."""
-    return _class_fares(tn, bcode, acode, in_train_min)[0]["fareInr"]
+    return _class_fares(tn, bcode, acode, in_train_min, demand_score)[0]["fareInr"]
+
+
+def _stop_info(tn, code):
+    """(scheduled arrival minute-of-day, journey-day) for a train at a station,
+    from the in-memory schedule — used to build delay-model features."""
+    for stop in graph.TRAIN_STOPS.get(tn, []):
+        if stop[0] == code:
+            return stop[1], stop[3]   # arr, day
+    return None, None
+
+
+def _delay_ctx(tn, acode, ctx):
+    """Per-leg feature context for the delay model — position along the route
+    (from real cumulative distances), scheduled arrival hour, journey day, plus
+    the search's day-of-week/month. None on an undated search (→ measured tier)
+    or when we lack routed distances for this train."""
+    if not ctx or ctx.get("dow") is None:
+        return None
+    cum = graph.TRAIN_CUMDIST.get(tn) or {}
+    dist = cum.get(acode)          # may be None when code systems differ — that's OK,
+    total = max(cum.values()) if cum else 0   # the model treats position as optional (NaN)
+    arr, day = _stop_info(tn, acode)
+    return {"dow": ctx["dow"], "month": ctx["month"],
+            "dist_from_origin": dist, "total_km": total,
+            "sched_hour": (arr // 60) if arr is not None else -1,
+            "day_offset": (day - 1) if day else 0}
 
 
 def _road_leg(idx, frm, to, km, fromc=None, toc=None):
@@ -346,17 +375,22 @@ def _route_classes(*train_nos):
 
 
 def search(from_place, to_place, pref="confirmed", date=None):
-    day3, days_out, month = None, None, None
+    day3, days_out, month, dow = None, None, None, None
     if date:
         try:
             import datetime as _dt
             d = _dt.date.fromisoformat(date)
-            day3 = DAY3[d.weekday()]
+            dow = d.weekday()
+            day3 = DAY3[dow]
             days_out = (d - _dt.date.today()).days
             month = d.month
         except ValueError:
             pass
-    ctx = (days_out, month)
+    demand = metrics.demand_level(date)
+    # ctx carries everything the per-leg models need for a DATED search:
+    # confirmation lead/season (days_out, month), the delay model's day-of-week,
+    # and the travel-demand score for the flexi-fare advisory.
+    ctx = {"days_out": days_out, "month": month, "dow": dow, "demand": demand}
     key = (from_place.strip().lower(), to_place.strip().lower(), pref, day3)
     if key in _CACHE:
         return _CACHE[key]
@@ -455,9 +489,25 @@ def search(from_place, to_place, pref="confirmed", date=None):
     reasoning = _reasoning(routes, o_heads, directs_by_board, d[0])
     if reasoning:
         corridor["reasoning"] = reasoning
-    result = {"corridor": corridor, "routes": routes}
+    result = {"corridor": corridor, "routes": routes, "demandAdvisory": _demand_advisory(demand)}
     _store(key, result)
     return result
+
+
+def _demand_advisory(demand):
+    """Turn a demand_level result into a UI advisory, or None on neutral dates.
+    Fares are regulated (fixed), so we're honest: on peak dates premium
+    (flexi-fare) trains cost more AND cheaper classes sell out first."""
+    if not demand or demand["score"] < 35:
+        return None
+    label = demand["label"] or "Peak travel dates"
+    if demand["score"] >= 60:
+        note = ("Premium (flexi-fare) trains like Rajdhani/Shatabdi run pricier, and "
+                "sleeper/cheaper classes sell out first — book early or expect AC-only.")
+    else:
+        note = "Slightly busier travel day — cheaper classes may fill up faster than usual."
+    return {"level": "high" if demand["score"] >= 60 else "moderate",
+            "label": label, "note": note, "drivers": demand["drivers"]}
 
 
 def _reasoning(routes, o_heads, directs_by_board, to_name):
@@ -549,16 +599,19 @@ def _diversify(ranked):
     return kept + overflow
 
 
-def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
+def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=None):
+    ctx = ctx or {}
+    demand_score = (ctx.get("demand") or {}).get("score", 0)
     legs = []
     first_km, last_km = b["km"], a["km"]
     bc, ac = _coord(b), _coord(a)
     halts = len(c.get("path") or []) - 2 if c.get("path") else None
     rail_km = _rail_km(c["train"], b["code"], a["code"], c["in_train"])
     dprofile = metrics.leg_delay_profile(c["train"], c["name"], rail_km, halts,
-                                         measured=graph.TRAIN_DELAY.get(c["train"]))
+                                         measured=graph.TRAIN_DELAY.get(c["train"]),
+                                         context=_delay_ctx(c["train"], a["code"], ctx))
     conf_pct, conf_state = metrics.confirmation_estimate(
-        _route_classes(c["train"]), dprofile["tier"], ctx[0], ctx[1])
+        _route_classes(c["train"]), dprofile["tier"], ctx.get("days_out"), ctx.get("month"))
     reliability = metrics.route_reliability(dprofile["onTimePct"], None, 0, first_km, conf_pct)
     if first_km > 2:
         legs.append(_road_leg(f"{c['train']}-fm", frm, b["name"], first_km, ocoord, bc))
@@ -568,8 +621,8 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
                  "name": f"{c['train']} {c['name'] or ''}".strip(),
                  "from": b["name"], "to": a["name"], "depart": _hhmm(c["dep"]), "arrive": _hhmm(c["arr"]),
                  "durationMins": c["in_train"],
-                 "classFares": _class_fares(c["train"], b["code"], a["code"], c["in_train"]),
-                 "fareInr": _fare_rail(c["train"], b["code"], a["code"], c["in_train"]),
+                 "classFares": _class_fares(c["train"], b["code"], a["code"], c["in_train"], demand_score),
+                 "fareInr": _fare_rail(c["train"], b["code"], a["code"], c["in_train"], demand_score),
                  "confirmation": conf_state,
                  "delayProfile": {"avgMins": dprofile["avgMins"], "onTimePct": dprofile["onTimePct"],
                                   "source": dprofile["delaySource"], "p90": dprofile.get("p90")},
@@ -584,10 +637,10 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
 
     is_cross = first_km > 20
     ot = dprofile["onTimePct"]
-    ot_measured = dprofile["delaySource"] == "measured"
-    ot_label = "On-time record" if ot_measured else "On-time (est.)"
-    ot_phrase = (f" ~{ot}% on-time over a year of real runs" if ot_measured
-                 else f" ~{ot}% on-time (est.)")
+    src = dprofile["delaySource"]
+    ot_label = {"measured": "On-time record", "predicted": "On-time (predicted)"}.get(src, "On-time (est.)")
+    ot_phrase = {"measured": f" ~{ot}% on-time over a year of real runs",
+                 "predicted": f" ~{ot}% on-time predicted for your travel date"}.get(src, f" ~{ot}% on-time (est.)")
     return {
         "id": f"{c['train']}-{b['code']}-{a['code']}",
         "type": "cross-origin" if is_cross else "direct",
@@ -609,7 +662,7 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
         "reliabilityBreakdown": [
             {"label": "Confirmation (est.)", "value": conf_pct, "weight": 50},
             {"label": ot_label, "value": ot, "weight": 30, "source": dprofile["delaySource"]},
-            {"label": "First-mile access", "value": max(30, round(100 - first_km / 2)), "weight": 20},
+            {"label": "First-mile access", "value": round(metrics.access_pct(first_km)), "weight": 20},
         ],
         "why": (f"{b['name']} ({round(first_km)} km away) is a far better-connected railhead "
                 f"with {b['trains']} trains/day — boarding there beats the limited local options."
@@ -618,15 +671,18 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=(None, None)):
                 f"no change of train.") +
                ot_phrase + f", ~{conf_pct}% seat-confirm (est.).",
         "planB": (f"9 in 10 runs of this train reach within ~{round(dprofile['p90'])} min of "
-                  f"schedule (measured) — keep that buffer for any onward connection."
-                  if ot_measured and dprofile.get("p90") else
+                  f"schedule ({'measured' if src == 'measured' else 'predicted for your date'}) — "
+                  f"keep that buffer for any onward connection."
+                  if dprofile.get("p90") is not None else
                   (f"Seats look tight (~{conf_pct}% confirm, est.) — have a road fallback "
                    f"or nearby-date option ready." if conf_pct < 55 else None)),
         "legs": legs,
     }
 
 
-def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
+def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=None):
+    ctx = ctx or {}
+    demand_score = (ctx.get("demand") or {}).get("score", 0)
     legs = []
     first_km, last_km = b["km"], a["km"]
     bc, ac, hc = _coord(b), _coord(a), _hub_coord(j["hub"])
@@ -634,8 +690,10 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
     km2 = _rail_km(j["t2"], j["hub"], a["code"], j["it2"])
     halts1 = len(j.get("path1") or []) - 2 if j.get("path1") else None
     halts2 = len(j.get("path2") or []) - 2 if j.get("path2") else None
-    dp1 = metrics.leg_delay_profile(j["t1"], j["t1name"], km1, halts1, measured=graph.TRAIN_DELAY.get(j["t1"]))
-    dp2 = metrics.leg_delay_profile(j["t2"], j["t2name"], km2, halts2, measured=graph.TRAIN_DELAY.get(j["t2"]))
+    dp1 = metrics.leg_delay_profile(j["t1"], j["t1name"], km1, halts1, measured=graph.TRAIN_DELAY.get(j["t1"]),
+                                    context=_delay_ctx(j["t1"], j["hub"], ctx))
+    dp2 = metrics.leg_delay_profile(j["t2"], j["t2name"], km2, halts2, measured=graph.TRAIN_DELAY.get(j["t2"]),
+                                    context=_delay_ctx(j["t2"], a["code"], ctx))
     if first_km > 2:
         legs.append(_road_leg(f"{j['t1']}-fm", frm, b["name"], first_km, ocoord, bc))
         legs.append({"id": f"{j['t1']}-c0", "mode": "connection", "connectionSafetyPct": None,
@@ -643,22 +701,23 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
     leg1 = {"id": f"{j['t1']}-tr", "mode": "train", "trainNo": j["t1"], "name": f"{j['t1']} {j['t1name'] or ''}".strip(),
             "from": b["name"], "to": j["hub"], "depart": _hhmm(j["dep1"]),
             "arrive": _hhmm(j["arr1"]) if j.get("arr1") is not None else None,
-            "durationMins": j["it1"], "classFares": _class_fares(j["t1"], b["code"], j["hub"], j["it1"]),
-            "fareInr": _fare_rail(j["t1"], b["code"], j["hub"], j["it1"]), "confirmation": "confirmed",
+            "durationMins": j["it1"], "classFares": _class_fares(j["t1"], b["code"], j["hub"], j["it1"], demand_score),
+            "fareInr": _fare_rail(j["t1"], b["code"], j["hub"], j["it1"], demand_score), "confirmation": "confirmed",
             "delayProfile": {"avgMins": dp1["avgMins"], "onTimePct": dp1["onTimePct"],
                              "source": dp1["delaySource"], "p90": dp1.get("p90")},
             "fromCoords": bc, "toCoords": hc, "pathCoords": _path_coords(j.get("path1")),
             "days": _days_label(j["t1"]), "stops": _path_stops(j.get("path1")), "halts": halts1}
     legs.append(leg1)
     # Connection safety from the ARRIVING train's own delay distribution vs buffer.
-    safety = metrics.connection_safety(j["wait"], dp1["avgMins"])
+    # Prefer the predicted quantile CDF (coherent with its p50/p90); else the avg.
+    safety = metrics.connection_safety(j["wait"], dp1.get("quantiles") or dp1["avgMins"])
     legs.append({"id": f"{j['t1']}-{j['t2']}-cx", "mode": "connection", "connectionSafetyPct": safety,
                  "bufferMins": j["wait"],
                  "note": f"Change at {j['hub']} ({j['hub_trains']} trains/day) · {j['wait']} min connection"})
     leg2 = {"id": f"{j['t2']}-tr", "mode": "train", "trainNo": j["t2"], "name": f"{j['t2']} {j['t2name'] or ''}".strip(),
             "from": j["hub"], "to": a["name"], "depart": _hhmm(j["dep2"]), "arrive": _hhmm(j["arr2"]),
-            "durationMins": j["it2"], "classFares": _class_fares(j["t2"], j["hub"], a["code"], j["it2"]),
-            "fareInr": _fare_rail(j["t2"], j["hub"], a["code"], j["it2"]), "confirmation": "confirmed",
+            "durationMins": j["it2"], "classFares": _class_fares(j["t2"], j["hub"], a["code"], j["it2"], demand_score),
+            "fareInr": _fare_rail(j["t2"], j["hub"], a["code"], j["it2"], demand_score), "confirmation": "confirmed",
             "delayProfile": {"avgMins": dp2["avgMins"], "onTimePct": dp2["onTimePct"],
                              "source": dp2["delaySource"], "p90": dp2.get("p90")},
             "fromCoords": hc, "toCoords": ac, "pathCoords": _path_coords(j.get("path2")),
@@ -670,11 +729,14 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
         legs.append(_road_leg(f"{j['t2']}-lm", a["name"], to, last_km, ac, dcoord))
 
     ot = min(dp1["onTimePct"], dp2["onTimePct"])   # weakest leg
-    ot_measured = dp1["delaySource"] == "measured" and dp2["delaySource"] == "measured"
-    ot_label = "On-time record" if ot_measured else "On-time (est.)"
+    _real = ("measured", "predicted")
+    both_real = dp1["delaySource"] in _real and dp2["delaySource"] in _real
+    ot_src = ("predicted" if "predicted" in (dp1["delaySource"], dp2["delaySource"])
+              else "measured" if both_real else "modelled")
+    ot_label = {"predicted": "On-time (predicted)", "measured": "On-time record"}.get(ot_src, "On-time (est.)")
     conf_pct, conf_state = metrics.confirmation_estimate(
         _route_classes(j["t1"], j["t2"]), max(dp1["tier"], dp2["tier"], key=lambda t: {"premium": 3, "superfast": 2, "express": 1, "passenger": 0}[t]),
-        ctx[0], ctx[1])
+        ctx.get("days_out"), ctx.get("month"))
     reliability = metrics.route_reliability(ot, safety, 1, first_km, conf_pct)
     return {
         "id": f"{j['t1']}-{j['hub']}-{j['t2']}",
@@ -697,8 +759,8 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=(None, None)):
         "reliabilityBreakdown": [
             {"label": "Confirmation (est.)", "value": conf_pct, "weight": 38},
             {"label": "Connection safety (est.)", "value": safety or 60, "weight": 30},
-            {"label": ot_label, "value": ot, "weight": 20,
-             "source": "measured" if ot_measured else "modelled"},
+            {"label": ot_label, "value": ot, "weight": 20, "source": ot_src},
+            {"label": "First-mile access", "value": round(metrics.access_pct(first_km)), "weight": 12},
         ],
         "why": (f"No through train — but {j['hub']} ({j['hub_trains']} trains/day) links the two "
                 f"sides with a {j['wait']}-min connection (~{safety or 60}% safe, est.)."),

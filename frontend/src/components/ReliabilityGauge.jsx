@@ -19,6 +19,11 @@ function BreakdownBars({ items }) {
             <div className="flex items-center justify-between text-xs">
               <span className="flex items-center gap-1.5 text-muted">
                 {it.label}
+                {typeof it.weight === 'number' && (
+                  <span className="text-faint" title="How much this factor counts toward the overall score">
+                    · {it.weight}% of score
+                  </span>
+                )}
                 {it.source === 'measured' && (
                   <span
                     className="rounded-full bg-safe-50 px-1.5 py-px text-[10px] font-semibold text-safe-600"

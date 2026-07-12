@@ -26,6 +26,21 @@ the roadmap in **[`PHASE_B_PLAN.md`](PHASE_B_PLAN.md)**.
   running-day filtering, autocomplete, decision-reasoning + Plan B, self-drawing
   map through real stations. Next: **ML delay prediction** (see Phase C in the
   log) and the collector.
+- **Accounts + personalization** ✅ real email+password auth (JWT bearer,
+  bcrypt, password-reset email via Brevo SMTP) — every screen except the
+  landing page requires login. Saved trips and recent searches are per-user
+  and server-owned (Postgres), not localStorage. RedBus-style "preferred
+  departure time" filter on results (Early Morning / Afternoon / Evening /
+  Late Night).
+- **Phase C ML** ✅ (items 1–2) delay prediction + learned connection safety.
+  A scikit-learn HistGradientBoosting model, trained on 38.4M dated delay
+  observations, predicts a *conditioned* delay distribution per leg ("on a
+  Tuesday in November, ~55 min late" not a flat average) — `delaySource:
+  "predicted"` on dated searches; on-time %, p90 and connection safety all
+  derived from the one calibrated CDF. Plus a demand-aware fare advisory
+  (festival/holiday calendar → flexi-fare bump for premium trains + scarcity
+  note; regulated fares stay fixed). Seat-confirmation ML + learning-to-rank
+  remain deferred (need the collector's booking data).
 
 ---
 
@@ -41,6 +56,7 @@ python -m venv .venv
 .venv\Scripts\activate                 # Windows  (source .venv/bin/activate on mac/Linux)
 pip install -r requirements.txt
 cp .env.example .env                     # then paste the team DATABASE_URL into .env
+python -m etl.init_auth_tables           # one-time: creates users/saved_trips/etc. tables
 uvicorn app.main:app --reload --port 8000
 ```
 - Health: http://127.0.0.1:8000/health  ·  Docs: http://127.0.0.1:8000/docs
@@ -50,6 +66,13 @@ uvicorn app.main:app --reload --port 8000
   ~0.5s after). To rebuild the DB from scratch (rarely needed) see
   "Rebuild the database from scratch" below — it's now a multi-step pipeline
   (timetable → fares → delays → distances/extra trains).
+- **Auth needs `SECRET_KEY`** in `.env` (any long random string, must be
+  identical across every server process — see `.env.example`) or signup/login
+  fail with a clear error; everything else works without it. Password-reset
+  email additionally needs `SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM_EMAIL`
+  (Brevo's free tier — get these at app.brevo.com under SMTP & API; see
+  `.env.example` for the exact steps) — without them, forgot-password still
+  returns success but just logs the reset link instead of emailing it.
 
 ### 2. Frontend
 ```bash
@@ -61,7 +84,7 @@ npm run dev                                  # http://localhost:5173
 
 ### 3. Tests
 ```bash
-cd backend && .venv\Scripts\python -m pytest -q     # 35 tests: metrics (pure, always run) + engine/contract (skip without a DB)
+cd backend && .venv\Scripts\python -m pytest -q     # ~73 tests: metrics/auth/ML (pure, always run) + engine/contract (skip without a DB)
 cd frontend && npm run lint && npm run build
 ```
 
@@ -94,6 +117,10 @@ If you don't have the team's `DATABASE_URL`, stand up your own DB and load it:
      running-day corrections, seasonal-train detection.
    - `python -m etl.load_schedule_extra` — real per-stop distances
      (`app/data/train_cumdist.json`) + ~1,500 extra trains.
+   - `python -m etl.train_delay_model` (~5 min, streams the 1 GB delay dump) —
+     trains the delay-prediction model → `app/data/delay_model.joblib`. Optional:
+     without it, delay falls back to the flat measured average (no "predicted"
+     tier). Requires the `train_delays` table (from `load_delays`) to exist first.
    Do **not** run the deprecated `load_all.py` — it breaks the current schema.
 5. **Verify:** `python etl/verify.py` (row counts + core queries) and
    `python etl/benchmark.py` (duration sanity vs real trains).
@@ -111,5 +138,5 @@ If you don't have the team's `DATABASE_URL`, stand up your own DB and load it:
 ## For contributors
 
 Every work session appends to `PROJECT_LOG.md`; every hard bug becomes a case
-study in `ENGINEERING_NOTES.md` (P1–P11 so far). Keep that up — it's the team's
+study in `ENGINEERING_NOTES.md` (P2–P19 so far). Keep that up — it's the team's
 shared memory and the interview record.

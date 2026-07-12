@@ -222,21 +222,26 @@ changelog entry below) is what unlocks real ML — before it, `metrics.py` had
 no labelled dataset to fit a model to. Ranked by value ÷ effort, using data we
 already have on disk **now** (no collector needed to start):
 
-1. **Delay prediction (do this first).** Today every leg on a given train shows
-   ONE flat measured average (`train_delays.avg_delay`). But `combined_delay.csv`
-   has 38.4M dated, per-station observations — enough to predict delay
-   *conditioned on the trip*: a gradient-boosted model (LightGBM/XGBoost) on
-   tier, distance-from-origin, halts, day-of-week, month/season, and upstream
-   delay would turn "this train averages 39 min late" into "on a Tuesday in
-   July, at this station, ~55 min late." Slots into the exact hook
-   `metrics.leg_delay_profile(measured=…)` already has — add a third
-   `delaySource: "predicted"` tier between measured and modelled. Planned
-   layout: `etl/train_delay_model.py` (trains + serializes) → a small model
-   artifact loaded like `app/data/fare_table.json`, no new infra.
-2. **Connection safety as a learned probability.** Replace the exponential
-   `P(delay ≤ buffer)` approximation in `metrics.connection_safety` with a
-   calibrated classifier trained on historical hub delays — same data, richer
-   model, no new data source needed.
+1. **Delay prediction — ✅ DONE (2026-07-13).** `etl/train_delay_model.py` →
+   scikit-learn HistGradientBoosting (chosen over LightGBM: same algorithm, no
+   native-dep deploy risk), predicting a coherent distribution (mean + quantiles)
+   from serve-time-safe features (baseline + day-of-week + month + position +
+   scheduled hour). `delaySource:"predicted"` tier in `metrics.leg_delay_profile`,
+   fired on dated searches. MAE 26.9 vs 29.3 flat-baseline; near-perfect quantile
+   calibration. 1.7 MB sidecar artifact, no infra. NOTE vs the original sketch
+   below: "upstream delay" was dropped (it's a live signal, not knowable at plan
+   time — the train's historical baseline substitutes). See ENGINEERING_NOTES P18.
+2. **Connection safety as a learned probability — ✅ DONE (2026-07-13).**
+   `metrics.connection_safety` now reads the arriving train's predicted quantile
+   CDF at the buffer (a coherent P(delay≤buffer)), falling back to the old
+   exponential when a leg isn't predicted. Realised as a CDF rather than a
+   fixed-threshold classifier so it answers any buffer and stays consistent with
+   the displayed p50/p90. Also fixed the latent avg-vs-p50 split. See P18.
+   - **Bonus (not on the original list): demand-aware fare advisory.** The user
+     asked for "price by festival/weekend". Train fares are regulated (fixed) so
+     there's no varying target to ML — instead, a festival/holiday calendar drives
+     a real flexi-fare multiplier for premium dynamic-fare trains + a scarcity
+     advisory, all "est."-labelled. See ENGINEERING_NOTES P19.
 3. **Seat confirmation model** — the one number still honestly labelled
    "(est.)". Needs booking/PNR snapshots we don't have yet; **blocked on the
    collector** (Phase B Step 2, deferred — no real users to collect from). Do
@@ -246,7 +251,7 @@ already have on disk **now** (no collector needed to start):
    hand-set 50/30/20 etc.) — needs real user click/booking feedback. Deferred
    with the collector, same reason as #3.
 
-Start with #1; it's the only one with zero new data dependencies.
+Items 1 & 2 shipped 2026-07-13. Items 3 & 4 remain blocked on the collector.
 
 ## Phase D — Confidence layer — ⏳ PLANNED
 Stronger confirmation prediction, comfort/safety filters, split-ticketing.
@@ -264,6 +269,150 @@ must be set to `frontend/`.)
 ---
 
 ## Changelog
+- **2026-07-13 (Phase C ML: delay prediction + learned connection safety + demand-aware fare advisory)** —
+  the first real ML lands, plus an honest reframe of "price prediction".
+  - **Delay prediction (roadmap item 1) — DONE.** `etl/train_delay_model.py`
+    streams the 38.4M-row delay dump (reservoir-samples ~2.75M rows across 6,991
+    trains), joins the per-stop schedule, and trains **scikit-learn
+    HistGradientBoosting** — chosen over LightGBM (same histogram-GBT family, but
+    no native OpenMP wheel to deploy, ~zero accuracy cost). It predicts a
+    **coherent distribution** (mean + quantiles {0.1,0.25,0.5,0.75,0.9}); p90,
+    on-time % (P≤30) and connection safety (P≤buffer) are all derived from that
+    one calibrated CDF so they can't disagree. Held-out **MAE 26.9 vs 29.3 min**
+    for the flat average (+8.4%), quantile calibration near-perfect (0.5→0.505,
+    0.9→0.901). Serve-time-safe features only — the roadmap's "upstream delay" is
+    a live signal we don't have when planning, so the model refines the train's
+    historical baseline using day-of-week/month/position/scheduled-hour. New
+    `delaySource:"predicted"` tier in `metrics.leg_delay_profile` (above
+    measured, above modelled), fired only on a DATED search. 1.7 MB sidecar
+    artifact loaded like `fare_table.json` — no new infra, no graph-cache bump.
+  - **Learned connection safety (roadmap item 2) — DONE.** `connection_safety`
+    now reads the arriving train's predicted quantile CDF at the buffer instead
+    of a single-average exponential, and this fixed a latent inconsistency (the
+    feasibility gate used p50 while the displayed % used the average — now both
+    read one distribution). Falls back to the old exponential when a leg isn't
+    predicted.
+  - **"Price by festival/weekend" — reframed, honestly.** Verified first: Indian
+    train fares in our data are regulated distance-slab fares, static per (route,
+    class), zero date variation — an ML price model would train on a constant. So
+    instead of faking it: a curated `app/data/india_calendar.json` (festivals +
+    national holidays, 2025-26) drives `metrics.demand_level(date)` →
+    (a) a real flexi-fare multiplier for premium dynamic-fare trains only
+    (Rajdhani/Shatabdi/Duronto, IRCTC's published tier rule; regulated trains
+    stay fixed at ×1.0), and (b) a `demandAdvisory` on the results page ("Diwali
+    week — premium trains pricier, sleeper likely sold out"). All "est."-labelled.
+    See ENGINEERING_NOTES P18 (delay model) + P19 (the fare reframe).
+  - **Deferred, unchanged:** seat-confirmation ML and learning-to-rank stay
+    blocked on the collector (no booking/PNR/click data yet).
+  - Deps: `scikit-learn` + `pandas` uncommented in requirements (sklearn is a
+    runtime dep now — load + predict; pandas is training-only). Tests: +11
+    (pure demand/flexi/safety/CDF/tier + gated predicted-source & advisory
+    checks). Frontend: results-page advisory banner (caution styling), lint+build
+    clean.
+- **2026-07-12 (real accounts: signup/login, per-user personalization, departure-time filter)** —
+  the app stops being anonymous. `useAuthStore`'s phone+OTP theater (any 4-6
+  digit code passed; the whole "user database" sat in localStorage, zero
+  backend calls) is replaced with real email+password accounts.
+  - **Auth:** `users`/`password_resets`/`saved_trips`/`recent_searches` tables
+    (`etl/init_auth_tables.py`); bcrypt + stateless JWT (`app/auth.py`,
+    14-day expiry, `Authorization: Bearer` header, no cookies — this app's
+    own deploy notes plan the frontend and backend on separate origins, so
+    bearer avoids cross-site cookie fragility). `SECRET_KEY` fails loudly if
+    unset (unlike DB/graph, a JWT secret must be identical across every
+    worker process — an auto-generated one would cause intermittent,
+    worker-dependent 401s, worse than a clean failure). Password-reset email
+    via **Brevo SMTP** (`app/email.py`, Python's stdlib `smtplib`, no new
+    dependency), rate-limited to one send per 2 minutes per account,
+    always-200 response (no email enumeration). *(Started on Resend — its
+    free/no-domain sandbox sender can only email the Resend account's own
+    address, which breaks for every other real user; switched to Brevo, whose
+    free tier only requires verifying a single sender EMAIL — a
+    confirmation-link click, no DNS — to send to anyone.)*
+  - **Every page except the landing page now requires login.** New
+    `RequireAuth.jsx` wraps the existing `<Layout/>` route block; a three-state
+    `status` (`checking`/`authenticated`/`unauthenticated`, not a boolean) avoids
+    both flashing protected content and flash-redirecting a valid session while
+    a persisted token is being re-verified against `/api/auth/me`.
+  - **Saved trips and recent searches moved server-side, per-user.** Saved
+    trips store the full route JSON snapshot (not just an id) — transfer-route
+    ids can't be stably rebuilt after a restart without the Redis store this
+    project doesn't have yet (`engine.get_stored_route`'s comment already says
+    so), so the DB snapshot substitutes for that. `SavedTrips.jsx` now shows
+    "Saved on {date}" rather than presenting a frozen fare/reliability number
+    as if it were live. Recent searches dedupe by (from,to) case-insensitively
+    (`from_key`/`to_key` columns) — "Delhi" and "delhi" upsert the same row,
+    bumping it to the top, rather than creating near-duplicates.
+  - **Cross-user data leak closed:** explicit logout now clears
+    `useJourneyStore`'s personalization AND hard-navigates
+    (`window.location.href`, not a router navigate) — without this, a second
+    user logging in on the same tab would briefly see the first user's saved
+    trips/recent searches still sitting in memory.
+  - **New filter: preferred departure time** (`FiltersPanel.jsx`), RedBus-style
+    multi-select — Early Morning (4–10am) / Afternoon (10am–5pm) / Evening
+    (5–10pm) / Late Night (10pm–4am, wraps midnight). Implemented entirely
+    client-side in `Results.jsx`'s existing filter pass (same pattern as the
+    pre-existing `avoidLateNight`), no backend change needed; an empty
+    selection is behaviourally identical to today.
+  - Backend: 51/51 pytest passing (`test_auth.py` new — pure hash/JWT unit
+    tests plus DB-gated signup/login/saved-trips/recent-searches integration
+    tests). Frontend: lint + production build both clean.
+  - **Known gaps, documented not hidden:** no server-side session revocation
+    (stateless JWT, logout is client-side only); no "refresh this saved trip"
+    re-fetch action yet (a real gap given snapshots go stale — flagged as a
+    follow-up); a residual timing side-channel on `forgot-password`
+    (registered vs. unregistered email) is accepted, not engineered away.
+  - **User-verified end-to-end** on a real browser (this session's own
+    Chrome-extension check never connected, so this was the actual
+    confirmation): signup/login, route guarding, saved trips, recent
+    searches, and the departure filter all confirmed working. Forgot-password
+    was the one exception — see the Resend→Brevo entry above and
+    ENGINEERING_NOTES P17 for the diagnosis.
+  - **Recent-searches redesigned to match ixigo (user-requested):** the
+    static always-visible chip row is replaced by a dropdown that appears
+    under the **From** field on focus when it's empty (`Search.jsx`'s
+    `PlaceInput`, now shared between place-autocomplete and recent-searches —
+    typing 2+ characters switches it back to place suggestions). Each row
+    shows a clock icon, `From → To`, and the date. Picking one fills the form
+    without auto-navigating, so the user still confirms with "Find my route" —
+    matching ixigo's actual behaviour, not just its look. The search form no
+    longer defaults to the hardcoded "Rourkela → Nashik" placeholder values
+    now that there's a real personalization feature to show instead.
+  - **Password visibility toggle, made consistent app-wide:** `Auth.jsx`'s
+    login/signup form already had a show/hide eye icon on its password
+    fields; `ResetPassword.jsx` was missed and didn't (user-caught). Extracted
+    the toggle into a shared `components/PasswordField.jsx` used by both, so
+    every current and future password field gets it automatically rather than
+    each page reimplementing (and risking forgetting) it.
+- **2026-07-12 (station-identity mismatch fixed + general geo-guard)** — user
+  caught a Gorakhpur train (`15909 Avadh Assam Exp`) shown reaching "Sangar"
+  (near Katra, J&K) — it really stops at **Sangariya** (Rajasthan). Root cause:
+  the timetable name→code matcher bound the "Sangariya" stop to the wrong
+  station **SGRR "Sangar" (J&K)** instead of **SGRA "Sangaria" (Rajasthan)**,
+  ~340 km off, so the train appeared to teleport north and back.
+  - **Detector (`graph.mislocated_stations`, no hand list):** every stop's
+    *expected* location is the midpoint of its neighbours; across all a station's
+    trains those cluster where it really is. A station whose STORED coord sits
+    >150 km from that cluster in >60% of its trains is mis-identified. Found
+    **70** such codes (distinct from legitimate reversal junctions like Itarsi,
+    which are not flagged).
+  - **Repair (`etl/fix_station_mismatches.py`, applied):** for the high-confidence
+    cases — another station whose name shares a long prefix sitting ≤10 km from
+    the expected spot — remap the stops to the correct code. **9 stations, 195
+    stop rows** repointed in the DB (SGRR→SGRA, HCM→HCR, GPPR→GBK, AGCI→AAM,
+    AWL→AIH, JMRA→JMIR, MH→MHA, RSLR→RPGU, SGRD→SGRE); num_trains recomputed;
+    cache v4→v5. (The collateral false-positive MBY "Mandi Dabwali" — flagged
+    only because its neighbour SGRR was wrong — was correctly NOT remapped, and
+    un-flagged itself after the fix.)
+  - **General guard (`graph.stop_detour_km` in `single_train`/`one_transfer`):**
+    the router now refuses to board/alight at any stop that is a gross detour
+    (>150 km) in its own train path — so a bad-geo station can never produce a
+    nonsense route, including the **58** remaining flagged codes with no clean
+    same-name match. Only judges the board/alight stop itself, so a real reversal
+    junction as a pass-through is unaffected.
+  - Verified: Gorakhpur→Katra now tops with Gorakhpur→Jammu Tawi (correct J&K
+    railhead), 0 legs through "Sangar". Tests: +1 regression (router never emits
+    a gross-outlier board/alight, codes not hardcoded so it survives the repair)
+    → **38/38 pass**. See ENGINEERING_NOTES P16.
 - **2026-07-08 (seasonal/special trains date-gated via the calendar)** — a Magh
   Mela special (`5002 GKP JI MAGH MELA`) was showing on every date though it
   only runs a few days in January. Now special trains surface only near their

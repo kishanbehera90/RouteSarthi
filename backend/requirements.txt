@@ -9,6 +9,10 @@ httpx>=0.27            # outbound calls + TestClient
 psycopg[binary]>=3.2
 psycopg-pool>=3.2
 
+# --- Auth (signup/login, password hashing + JWT sessions) ---
+bcrypt>=4.1
+PyJWT>=2.9
+
 # --- Deferred until needed ---
 # SQLAlchemy>=2.0
 # GeoAlchemy2>=0.15
@@ -17,10 +21,14 @@ psycopg-pool>=3.2
 # --- Cache (added in Step 4) ---
 # redis>=5.1
 
-# --- Ingestion + ML (added in Steps 2-5) ---
-# pandas>=2.2
+# --- Ingestion + ML ---
+# scikit-learn: delay-prediction model (load + predict at runtime; training in
+#   etl/train_delay_model.py). Histogram gradient boosting — same algorithm
+#   family as LightGBM but no native OpenMP wheel to deploy. Pulls numpy/scipy/joblib.
+scikit-learn>=1.5
+# pandas: training-time only (etl/train_delay_model.py assembles the sample frame).
+pandas>=2.2
 # geopandas>=1.0
-# scikit-learn>=1.5
 # lightgbm>=4.5
 
 # --- Tests ---

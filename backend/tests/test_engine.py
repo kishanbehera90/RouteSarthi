@@ -182,3 +182,120 @@ def test_no_backtracking_route(client, need_engine):
         for l in r["legs"]:
             if l["mode"] == "train":
                 assert "RINGAS" not in (l.get("to") or "").upper()
+
+
+def test_router_avoids_geographically_impossible_stops(need_engine):
+    # Regression: a Gorakhpur train (15909 Avadh Assam Exp) appeared to reach
+    # "Sangar" (SGRR, J&K) — really it stops at "Sangariya" (SGRA, Rajasthan),
+    # ~600 km off. The router must never offer a board/alight stop that is a
+    # gross geographic outlier in its own train path. (Codes not hardcoded, so
+    # this still holds after the data is repaired.)
+    import random
+    from app import graph
+    thr = graph.GUARD_DETOUR_KM
+
+    def min_detour(tn, code):
+        stops = graph.TRAIN_STOPS[tn]
+        ds = [graph.stop_detour_km(tn, i) for i, s in enumerate(stops) if s[0] == code]
+        return min(ds) if ds else 0.0
+
+    codes = list(graph.STATION_IDX.keys())
+    random.seed(1)
+    boards = random.sample(codes, min(60, len(codes)))
+    alights = {c: True for c in random.sample(codes, min(300, len(codes)))}
+    checked = 0
+    for b in boards:
+        for c in graph.single_train([b], alights):
+            assert min_detour(c["train"], c["board"]) <= thr, (c["train"], c["board"])
+            assert min_detour(c["train"], c["alight"]) <= thr, (c["train"], c["alight"])
+            checked += 1
+    assert checked > 0, "test exercised no candidates"
+
+
+def test_reliability_breakdown_is_complete(client, need_engine):
+    # Bug: _transfer_route's reliabilityBreakdown was missing "First-mile
+    # access" (metrics.route_reliability weighs it at 12% for transfers, 20%
+    # for direct) — displayed weights summed to 88, not 100, and the score
+    # showed a factor the UI never explained. Every route's breakdown weights
+    # must sum to 100, and any route with a road first-mile leg must show an
+    # access factor (in range) rather than omitting it.
+    # Road-only routes use a separate, informational (unweighted) breakdown —
+    # not derived from metrics.route_reliability — so they're out of scope here.
+    seen_direct = seen_transfer = False
+    for frm, to in [("Gorakhpur", "Prayagraj"), ("Imphal", "Bengaluru"), ("Delhi", "Mumbai")]:
+        for r in _routes(client, frm, to)["routes"]:
+            bd = r.get("reliabilityBreakdown")
+            if not bd or r.get("roadOnly"):
+                continue
+            assert sum(it["weight"] for it in bd) == 100, (r["id"], bd)
+            has_road_firstmile = any(l["mode"] == "cab" and l["id"].endswith("-fm") for l in r["legs"])
+            access_item = next((it for it in bd if it["label"] == "First-mile access"), None)
+            if has_road_firstmile:
+                assert access_item is not None, f"{r['id']} has a road first-mile leg but no access factor shown"
+                assert 30 <= access_item["value"] <= 100
+            seen_direct = seen_direct or r.get("transfers") == 0
+            seen_transfer = seen_transfer or r.get("transfers") == 1
+    assert seen_direct and seen_transfer, "test corridors should exercise both direct and transfer routes"
+
+
+# --- Phase C: delay prediction + demand-aware fare advisory ------------------
+def _future_date(offset_days=30):
+    import datetime as dt
+    return (dt.date.today() + dt.timedelta(days=offset_days)).isoformat()
+
+
+def test_dated_search_uses_predicted_delay(client, need_engine):
+    # With the trained model present, a DATED search on a well-observed corridor
+    # should surface at least one train leg tagged delaySource="predicted".
+    from app import delay_model
+    import pytest
+    if not delay_model.have_model():
+        pytest.skip("delay_model.joblib not present (run etl.train_delay_model)")
+    d = _routes(client, "Gorakhpur", "Prayagraj", date=_future_date())
+    sources = [l.get("delayProfile", {}).get("source")
+               for r in d["routes"] for l in r["legs"] if l["mode"] == "train"]
+    assert "predicted" in sources, f"expected a predicted leg, saw {set(sources)}"
+
+
+def test_undated_search_never_predicts(client, need_engine):
+    # No travel date -> the model can't condition on day-of-week, so legs fall
+    # back to measured/modelled and demandAdvisory is absent.
+    d = _routes(client, "Gorakhpur", "Prayagraj")
+    sources = {l.get("delayProfile", {}).get("source")
+               for r in d["routes"] for l in r["legs"] if l["mode"] == "train"}
+    assert "predicted" not in sources
+    assert d.get("demandAdvisory") in (None, {})
+
+
+def test_festival_date_returns_demand_advisory(client, need_engine):
+    # A festival date (Diwali 2026) must carry an advisory; a plain weekday must not.
+    festival = _routes(client, "Delhi", "Mumbai", date="2026-11-08")
+    assert festival.get("demandAdvisory"), "expected a demand advisory on Diwali"
+    assert festival["demandAdvisory"]["level"] in ("moderate", "high")
+    plain = _routes(client, "Delhi", "Mumbai", date="2026-07-14")  # a Tuesday
+    assert plain.get("demandAdvisory") in (None, {})
+
+
+def test_regulated_fares_unchanged_by_date(client, need_engine):
+    # A regulated (non-premium) train's cheapest fare must be identical on a
+    # festival date and a plain date — only premium/flexi trains may move.
+    plain = _routes(client, "Gorakhpur", "Prayagraj", date="2026-07-14")
+    festival = _routes(client, "Gorakhpur", "Prayagraj", date="2026-11-08")
+
+    def cheapest_by_train(data):
+        out = {}
+        for r in data["routes"]:
+            for l in r["legs"]:
+                if l["mode"] == "train" and l.get("fareInr"):
+                    # premium trains are allowed to move; skip them
+                    name = (l.get("name") or "").upper()
+                    if any(k in name for k in ("RAJDHANI", "SHATABDI", "VANDE", "DURONTO", "TEJAS", "HUMSAFAR")):
+                        continue
+                    out[l["trainNo"]] = l["fareInr"]
+        return out
+
+    a, b = cheapest_by_train(plain), cheapest_by_train(festival)
+    shared = set(a) & set(b)
+    assert shared, "expected overlapping regulated trains across the two dates"
+    for tn in shared:
+        assert a[tn] == b[tn], f"regulated train {tn} fare moved with date ({a[tn]} vs {b[tn]})"

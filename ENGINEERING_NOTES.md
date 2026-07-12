@@ -585,6 +585,215 @@ Repeat searches: **~0 ms** (0.00–0.02 ms). ✅
 
 ---
 
+## P16 — A Gorakhpur train that "reached" Kashmir (station-identity mismatch)
+
+- **Symptom:** the user searched a route toward Katra (J&K) and saw
+  `15909 Avadh Assam Exp` board at Gorakhpur and alight at "Sangar", ~23 km road
+  from Katra. But 15909 is a Dibrugarh–Bikaner train that never goes near J&K.
+- **How I found the cause:** dumped 15909's stop list with coordinates. Between
+  Mandi Dabwali (29.96 N) and Hanumangarh (29.61 N) sat a stop whose stored
+  coordinate was **32.8 N — a 340 km jump north into J&K and back**. That stop's
+  code was `SGRR "Sangar"`; the real stop there is `SGRA "Sangaria"` (Rajasthan,
+  29.79 N), which slots in perfectly. Both are genuine, distinct datameet
+  stations — so this wasn't bad geo on one station, it was the schedule stop
+  bound to the *wrong* station.
+- **Root cause:** the timetable name→code matcher (load_v2) resolved the
+  schedule name "Sangariya" to `SGRR "Sangar"` (J&K) instead of `SGRA
+  "Sangaria"` (Rajasthan). SGRR had accumulated **35 trains** (vs SGRA's 5) —
+  all the misrouted "Sangariya" stops piling onto the wrong code.
+- **The fix (two layers):**
+  1. **Repair the data.** A detector with no hand list: each stop's *expected*
+     location is the midpoint of its neighbours; across all of a station's trains
+     those midpoints cluster where it really is. A station whose stored coord is
+     >150 km from that cluster in >60% of its trains is mis-identified
+     (`graph.mislocated_stations`). 70 found. For the high-confidence subset —
+     another station whose name shares a long prefix sitting ≤10 km from the
+     expected spot — remap the stops (`etl/fix_station_mismatches --apply`): 9
+     stations, 195 stop rows repointed in the DB, cache v4→v5.
+  2. **Guard against the rest.** The router (`single_train`/`one_transfer`) now
+     refuses to board or alight at a stop that adds >150 km of back-and-forth
+     versus its own neighbours (`graph.stop_detour_km`). This covers the 58
+     remaining flagged stations that have no clean same-name match, so *no*
+     bad-geo station can ever produce a nonsense route — even ones the data
+     repair couldn't confidently fix.
+- **Why this fix (and what I rejected):** I rejected using the detector's flagged
+  set directly as a routing blocklist — it has collateral false-positives (MBY
+  "Mandi Dabwali" got flagged only because its neighbour SGRR was wrong; MBY is a
+  perfectly real station). A global blocklist would have dropped legitimate
+  routes through Mandi Dabwali. The per-candidate *local* detour check
+  discriminates: it rejects the stop that is itself off the line (SGRR, 624 km
+  detour) while keeping its innocent neighbour (MBY, 64 km). I also rejected a
+  purely-runtime fix: the data was genuinely wrong and worth repairing so fares,
+  distances, and the drawn map line are correct too — the guard is the safety
+  net, not the whole answer.
+- **Impact (before → after):** Gorakhpur→Katra went from "board a train to a
+  phantom Kashmir stop" to topping with Gorakhpur→Jammu Tawi (the correct J&K
+  railhead), 0 legs through "Sangar". 9 stations / 195 stops corrected in data;
+  58 more neutralised by the guard. +1 regression test (router never emits a
+  gross-outlier board/alight — codes not hardcoded, so it still holds after the
+  data is repaired) → 38/38 pass.
+- **Interview soundbite:** "A user spotted a Gorakhpur train 'arriving' near
+  Kashmir. The bug was upstream: a fuzzy name-matcher had bound a 'Sangariya'
+  (Rajasthan) stop to 'Sangar' (J&K). I wrote a data-driven detector — a
+  station's real location is the consensus of its neighbours across every train,
+  so anything consistently far from that consensus is mis-identified — repaired
+  the high-confidence cases in the database, and added a routing guard that
+  refuses to board or alight anywhere that forces a geographically impossible
+  detour, so the class of bug can't surface again even where the data can't be
+  auto-corrected."
+
+---
+
+## P17 — Password-reset emails silently went nowhere (Resend's sandbox restriction)
+
+- **Symptom:** the user signed up, requested a password reset, and never got
+  the email — no error shown anywhere, since `/api/auth/forgot-password` is
+  designed to always return 200 (no email-enumeration).
+- **How I found the cause:** the 200-always design meant the API response
+  couldn't tell me anything, so I went straight to the backend log instead:
+  `send_reset_email failed: Client error '403 Forbidden' for url
+  'https://api.resend.com/emails'`. The 403 was swallowed by the endpoint (by
+  design) but not by the log. I then made the exact same call manually with
+  `httpx` to read Resend's actual response body instead of just the status code.
+- **Root cause:** Resend's free/no-domain "sandbox" sender
+  (`onboarding@resend.dev`) can only send to the email address that owns the
+  Resend account itself. Resend's own error message says so outright:
+  *"You can only send testing emails to your own email address... To send
+  emails to other recipients, please verify a domain."* Every signup test
+  account other than the developer's own email was doomed to 403, and would
+  stay that way in production — a verified domain (DNS records, hours to
+  propagate) would be needed before any real user could receive a reset email.
+- **The fix:** switched providers to Brevo (`app/email.py`, rewritten on
+  Python's stdlib `smtplib`/`email` — zero new dependency). Brevo's free tier
+  only requires verifying a single **sender email address** (click a
+  confirmation link — no DNS) to send to any recipient, which is the actual
+  constraint that matters here: this app's users won't have accounts on
+  whatever email provider is chosen, so the provider must not require the
+  *recipient* to be pre-approved.
+- **Why this fix (and what I rejected):** rejected verifying a domain on
+  Resend to keep it — that trades a five-minute provider swap for a DNS
+  dependency (needs the user to own a domain, wait for propagation) just to
+  keep using the first provider tried. The actual requirement was "any real
+  user, not just me, can receive the email," and Brevo satisfies that on its
+  free tier with zero infrastructure. Confirmed with a direct test send
+  (`httpx.post` to Resend, then the same to Brevo) before wiring it into the
+  app, rather than trusting documentation alone.
+- **Impact:** password-reset emails now deliver to any recipient, not just
+  the developer's own inbox — verified with a real send before/after the
+  switch (Resend: 403 to a third-party email, 200 only to the account owner's
+  own; Brevo: 200 to an arbitrary recipient once the sender was verified).
+- **Interview soundbite:** "A 'silent failure' pattern (always-200, no
+  enumeration) meant the API response gave me nothing to debug — so I went to
+  the log, then reproduced the exact HTTP call by hand to read the provider's
+  real error instead of guessing from the status code alone. The fix wasn't a
+  code bug at all — it was picking an email provider whose free-tier
+  restriction (sender verification) matched what the app actually needed,
+  instead of one whose restriction (recipient verification) didn't."
+
+---
+
+## P18 — The first ML model: predicting delay as a distribution, not a number
+
+- **The problem:** the engine showed ONE flat average delay per train
+  (`train_delays.avg_delay`) no matter when or where you travelled. But the raw
+  dump has 38.4M dated, per-station observations — the flat average throws away
+  the day-of-week, month, and position-along-route structure that's actually in
+  the data.
+- **Algorithm choice (and why not the obvious one):** the roadmap named
+  LightGBM. I chose scikit-learn's `HistGradientBoosting` instead — it's the
+  same histogram-GBT algorithm family (LightGBM originated it), accuracy within
+  noise on this tabular problem, but with no native OpenMP wheel to deploy.
+  For a project whose whole ethos is "pull → running in 3 minutes / graceful
+  fallback," dropping a native-lib deploy footgun for ~zero accuracy cost was
+  the right call.
+- **The key design decision — predict a distribution, derive everything from
+  it:** rather than a mean regressor plus a separate on-time classifier plus a
+  separate p90 model (which can mutually contradict), I train ONE mean model +
+  quantile models at {0.1,0.25,0.5,0.75,0.9}, then derive p90 (the 0.9 model),
+  on-time % (P(delay≤30) by interpolating the quantile CDF), AND connection
+  safety (P(delay≤buffer) from the same CDF) all from that one coherent
+  predicted distribution. They can never disagree, and connection safety
+  stopped being a crude single-average exponential — it reads the arriving
+  train's actual predicted spread. Held-out quantile calibration came out
+  near-perfect (0.5→0.505, 0.75→0.753, 0.9→0.901), which is what makes the
+  derived probabilities trustworthy.
+- **Serve-time-safe features only (the subtle bit):** the roadmap listed
+  "upstream delay" as a feature — but that's a *live* signal we don't have when
+  *planning* a trip. Training on it would leak information unavailable at serve
+  time. So the model uses the train's historical baseline
+  (`train_delays.avg_delay`, known at serve time) as the "prior" it refines,
+  plus day-of-week/month/position/scheduled-hour. It predicts the *conditional
+  deviation* from a train's own average, not the average from scratch.
+- **The bug real data threw (again): cross-source station codes.** First run,
+  ZERO legs came back "predicted" — every one fell back to measured. Cause: the
+  routed-distance table (`train_cumdist.json`, built from the delay dump's
+  schedule) and the engine's alighting-station code (from the DB timetable) use
+  partly *different* station codes for the same station (e.g. Allahabad `ALD`) —
+  the same code-drift class as P16. My feature assembly had hard-required the
+  distance lookup, so a missing code killed the whole prediction.
+- **The fix — make position optional, not mandatory.** The scheduled-hour and
+  journey-day come from the DB stops (same source as the alighting code, so they
+  always resolve); the baseline and travel date are the dominant signals. Only
+  `dist_from_origin`/`frac_route` depend on the mismatched table — so I made
+  them optional (NaN when the codes don't align; HistGradientBoosting handles
+  NaN natively). Prediction now fires on baseline + date + scheduled hour, using
+  routed distance as a bonus when the codes happen to agree. Robustness over a
+  feature that's only sometimes available.
+- **Impact:** on a dated search, delay is now conditioned on the trip
+  (delaySource `"predicted"`), held-out MAE 26.9 vs 29.3 min for the flat
+  average (+8.4%), with a calibrated spread that also upgrades connection safety.
+  Undated searches are unchanged (fall back to the flat measured average — the
+  model needs a date). No new infra: a 1.7 MB sidecar artifact loaded like
+  `fare_table.json`, no graph-cache bump.
+- **Interview soundbite:** "I made the first ML model predict a whole delay
+  distribution, not a point estimate — so the on-time %, the 90th-percentile
+  buffer, and the connection-safety probability are all read off one calibrated
+  curve and can't contradict each other. And I chose the boring histogram-GBT in
+  scikit-learn over LightGBM specifically to avoid a native-dependency deploy
+  risk for essentially no accuracy loss. Real data bit me the same way twice —
+  station codes differ across sources — so I made the position feature optional
+  rather than let a missing code silently disable the whole model."
+
+---
+
+## P19 — Refusing to ML-model a constant (the fare-prediction reframe)
+
+- **The request:** "predict per-class price by weekend / holiday / festival /
+  season," like a bus or flight app.
+- **What the data actually said:** I verified before building anything. Indian
+  train fares in our data are government-regulated distance-slab fares — static
+  per (route, class), with **zero** date variation. The `dynamicFare`/`tatkalFare`
+  columns exist but are 0 in the base rows; there's no festival/holiday calendar
+  on disk; the only date-varying signal in the whole dump is seat *availability*,
+  not price. An ML model needs a target that *moves* with the features — this
+  target doesn't move with date at all.
+- **The decision:** I did NOT build a price predictor. Training a model to
+  predict a constant would be fabricating sophistication — it would output the
+  same regulated fare with a veneer of ML noise, and worse, imply to the user
+  that fares fluctuate when they legally don't. I surfaced the data reality to
+  the user and offered honest alternatives.
+- **What we built instead (chosen by the user):** a transparent *demand
+  advisory*, not fake ML. A curated India festival/holiday/long-weekend calendar
+  drives (a) a real flexi-fare multiplier for the ONE place price genuinely
+  moves — premium (Rajdhani/Shatabdi/Duronto) dynamic-fare trains, via IRCTC's
+  published tier rule — and (b) a scarcity advisory ("Diwali week: sleeper likely
+  sold out, expect AC-only"). Regulated fares stay exactly fixed
+  (`flexi_fare_multiplier` returns 1.0 for non-premium — we never invent
+  variation). Everything is labelled "est.", like the confirmation number.
+- **Why this matters:** the ML-shaped request had an honest answer that wasn't
+  ML. Recognizing "there is no varying target here" and reframing to model where
+  variation *actually* exists (dynamic-fare trains + peak-date class scarcity) is
+  the difference between a useful feature and a plausible-looking lie.
+- **Interview soundbite:** "Someone asked me to ML-predict train fares by
+  festival. I checked the data first and found the target is a regulated
+  constant — it doesn't vary by date. So I refused to train a model that would
+  just predict a constant with noise, and instead built a transparent
+  demand-based advisory scoped to the one thing that genuinely moves: flexi-fare
+  premium trains and peak-date class scarcity. Knowing when *not* to use ML is
+  part of the job."
+
+---
+
 ## Template for future entries
 ```
 ## P# — <short title>

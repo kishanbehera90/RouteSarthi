@@ -20,13 +20,20 @@ from .db import connect
 
 _CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "processed", "graph_cache.pkl")
 _CUMDIST_FILE = os.path.join(os.path.dirname(__file__), "data", "train_cumdist.json")
-_CACHE_VERSION = 4  # v4: adds TRAIN_MONTHS (seasonal/special operating window)
+_CACHE_VERSION = 5  # v5: station-mismatch remap applied (etl/fix_station_mismatches)
 
 # tunables
 HUB_MIN_TRAINS = 80      # a station busy enough to be a transfer hub
 MAX_REACHED_HUBS = 40    # cap transfer hubs to the busiest reached ones
 CONN_MIN_BUFFER = 30     # min minutes to make a transfer
 CONN_MAX_WAIT = 360      # max sensible wait at a hub (6h)
+# A stop whose stored coordinate forces this much back-and-forth detour vs its
+# immediate neighbours is almost certainly a mis-identified station (e.g. a
+# "Sangariya" stop bound to "Sangar" in J&K). We refuse to board/alight there so
+# a bad-geo station can never produce a nonsense route, even one we haven't
+# repaired in the data yet. Only judges the stop itself — a legitimate reversal
+# junction as an interior pass-through is unaffected.
+GUARD_DETOUR_KM = 150
 
 _lock = threading.Lock()
 _loaded = False
@@ -232,6 +239,65 @@ def _haversine_km(lat1, lng1, lat2, lng2):
     return r * 2 * math.asin(math.sqrt(a))
 
 
+def stop_detour_km(tn, idx):
+    """Extra back-and-forth (km) the stop at position `idx` of train `tn` adds
+    versus its nearest coord-bearing neighbours on either side. ~0 when the stop
+    lies on the line between them; large when its stored location is off in the
+    weeds (a mis-identified station). Returns 0 when we can't judge (missing a
+    neighbour or coords) so we never over-filter."""
+    stops = TRAIN_STOPS.get(tn)
+    if not stops or idx <= 0 or idx >= len(stops) - 1:
+        return 0.0
+    here = STATION_COORD.get(stops[idx][0])
+    if not here:
+        return 0.0
+    prev = nxt = None
+    for k in range(idx - 1, -1, -1):
+        prev = STATION_COORD.get(stops[k][0])
+        if prev:
+            break
+    for k in range(idx + 1, len(stops)):
+        nxt = STATION_COORD.get(stops[k][0])
+        if nxt:
+            break
+    if not prev or not nxt:
+        return 0.0
+    via = (_haversine_km(prev[1], prev[0], here[1], here[0])
+           + _haversine_km(here[1], here[0], nxt[1], nxt[0]))
+    direct = _haversine_km(prev[1], prev[0], nxt[1], nxt[0])
+    return via - direct
+
+
+def mislocated_stations(outlier_km=GUARD_DETOUR_KM, far_fraction=0.6):
+    """Station codes whose STORED coordinate is consistently far from where the
+    timetable expects them (the median of neighbour-midpoints across all their
+    trains). These are mis-identified/mis-geocoded stations. Used by the data
+    repair (etl/fix_station_mismatches) and for reporting — NOT as a routing
+    blocklist (that would wrongly drop a correct station flagged only because a
+    neighbour is bad; routing uses the per-candidate stop_detour_km guard
+    instead). Returns {code: {"off_km", "exp": [lng, lat], "trains"}}."""
+    mids = {}
+    for stops in TRAIN_STOPS.values():
+        pts = [(s[0], STATION_COORD.get(s[0])) for s in stops]
+        pts = [(c, p) for c, p in pts if p]
+        for i in range(1, len(pts) - 1):
+            (_, a), (cb, b), (_, c2) = pts[i - 1], pts[i], pts[i + 1]
+            mids.setdefault(cb, []).append(((a[0] + c2[0]) / 2, (a[1] + c2[1]) / 2))
+    out = {}
+    for code, ms in mids.items():
+        stored = STATION_COORD.get(code)
+        if not stored or len(ms) < 3:
+            continue
+        xs = sorted(m[0] for m in ms)
+        ys = sorted(m[1] for m in ms)
+        ex, ey = xs[len(xs) // 2], ys[len(ys) // 2]
+        off = _haversine_km(stored[1], stored[0], ey, ex)
+        far = sum(1 for m in ms if _haversine_km(stored[1], stored[0], m[1], m[0]) > outlier_km) / len(ms)
+        if off > outlier_km and far >= far_fraction:
+            out[code] = {"off_km": round(off), "exp": [ex, ey], "trains": len(ms)}
+    return out
+
+
 def station_suggestions(q, limit=5):
     """Station names matching a prefix (then substring), busiest first — so
     any place with a railway station is searchable, not just GeoNames cities."""
@@ -327,6 +393,8 @@ def single_train(boards, alights, day3=None):
             dep = b[2] if b[2] is not None else b[1]
             if dep is None:
                 continue
+            if stop_detour_km(tn, idx) > GUARD_DETOUR_KM:
+                continue                                  # bad-geo boarding stop
             for j in range(idx + 1, len(stops)):
                 s = stops[j]
                 if s[0] in alights:
@@ -336,6 +404,8 @@ def single_train(boards, alights, day3=None):
                     in_train = (s[3] - b[3]) * 1440 + (arr - dep)
                     if in_train <= 0:
                         continue
+                    if stop_detour_km(tn, j) > GUARD_DETOUR_KM:
+                        continue                          # bad-geo alighting stop
                     out.append({"train": tn, "name": TRAIN_NAME.get(tn),
                                 "board": bcode, "dep": dep, "alight": s[0],
                                 "arr": arr, "in_train": in_train,
@@ -360,6 +430,8 @@ def one_transfer(boards, alights, day3=None):
             dep = b[2] if b[2] is not None else b[1]
             if dep is None:
                 continue
+            if stop_detour_km(tn, idx) > GUARD_DETOUR_KM:
+                continue                                  # bad-geo boarding stop
             for j in range(idx + 1, len(stops)):
                 hc = stops[j][0]
                 if hc in HUB_TRAINS and hc not in boards_set and hc not in alights_set:
@@ -418,6 +490,8 @@ def one_transfer(boards, alights, day3=None):
                     it2 = (s[3] - h[3]) * 1440 + (arr2 - dep2)
                     if it2 <= 0:
                         continue
+                    if stop_detour_km(tn2, j) > GUARD_DETOUR_KM:
+                        continue                          # bad-geo alighting stop
                     journeys.append({
                         "hub": hc, "hub_trains": HUB_TRAINS.get(hc, 0),
                         "board": bcode, "alight": s[0],

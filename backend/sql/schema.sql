@@ -56,3 +56,45 @@ CREATE INDEX IF NOT EXISTS cities_name_idx ON cities (lower(asciiname));
 -- Both name columns are searched with OR in geocoding; without BOTH indexes
 -- Postgres falls back to a 558k-row seq scan (see ENGINEERING_NOTES Layer 3).
 CREATE INDEX IF NOT EXISTS cities_name_lower_idx ON cities (lower(name));
+
+-- Auth + per-user personalization (etl/init_auth_tables.py) ----------------
+CREATE TABLE IF NOT EXISTS users (
+    id            SERIAL PRIMARY KEY,
+    email         TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    name          TEXT,
+    created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS password_resets (
+    id          SERIAL PRIMARY KEY,
+    user_id     INTEGER REFERENCES users(id),
+    token_hash  TEXT UNIQUE NOT NULL,   -- store only the HASH of the token
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    expires_at  TIMESTAMPTZ NOT NULL,
+    used_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS password_resets_user_idx ON password_resets (user_id);
+
+CREATE TABLE IF NOT EXISTS saved_trips (
+    id             SERIAL PRIMARY KEY,
+    user_id        INTEGER REFERENCES users(id),
+    route_id       TEXT NOT NULL,
+    route_json     JSONB NOT NULL,      -- full snapshot: transfer-route ids can't
+    schema_version INTEGER DEFAULT 1,   -- be rebuilt stably after a restart (no Redis yet)
+    saved_at       TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, route_id)
+);
+
+CREATE TABLE IF NOT EXISTS recent_searches (
+    id           SERIAL PRIMARY KEY,
+    user_id      INTEGER REFERENCES users(id),
+    from_key     TEXT NOT NULL,         -- normalized (trim+lower) for dedup
+    to_key       TEXT NOT NULL,
+    from_place   TEXT NOT NULL,         -- display casing, from /api/places
+    to_place     TEXT NOT NULL,
+    travel_date  TEXT,
+    pref         TEXT,
+    searched_at  TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, from_key, to_key)
+);
