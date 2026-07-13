@@ -198,7 +198,7 @@ export default function SearchPage() {
                 value={search.from}
                 onChange={(v) => setSearch({ from: v })}
                 placeholder="e.g. Rourkela"
-                recentSearches={recentSearches}
+                recentSearches={recentSearches.slice(0, 5)}
                 onPickRecent={pickRecentSearch}
               />
               <div className="border-t border-brand-50" />

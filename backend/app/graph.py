@@ -17,6 +17,7 @@ import threading
 import time
 
 from .db import connect
+from . import metrics
 
 _CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "processed", "graph_cache.pkl")
 _CUMDIST_FILE = os.path.join(os.path.dirname(__file__), "data", "train_cumdist.json")
@@ -413,14 +414,18 @@ def single_train(boards, alights, day3=None):
     return out
 
 
-def one_transfer(boards, alights, day3=None):
+def one_transfer(boards, alights, day3=None, predict_ctx=None):
     """origin railhead -> busy hub -> destination railhead, with a feasible
     same-day connection at the hub. All in-memory. (day3 filters leg 2 by the
-    same weekday — an approximation consistent with the %1440 wait heuristic.)"""
+    same weekday — an approximation consistent with the %1440 wait heuristic.)
+    `predict_ctx` = {"dow": int, "month": int} on a DATED search — lets the
+    feasibility gate use the date-conditioned PREDICTED p50 instead of the flat
+    measured one, so a connection that's genuinely bad for THIS date gets
+    filtered upstream instead of only surfacing as a low displayed percentage."""
     boards_set, alights_set = set(boards), set(alights)
 
     # leg 1: best (shortest in-train) way to reach each hub
-    reached = {}   # hub -> (in_train1, train1, board, dep1, arr_hub)
+    reached = {}   # hub -> (in_train1, train1, board, dep1, arr_hub, path1, arr_day1)
     for bcode in boards_set:
         for tn, idx in STATION_IDX.get(bcode, []):
             if not runs_on(tn, day3):
@@ -445,7 +450,7 @@ def one_transfer(boards, alights, day3=None):
                     cur = reached.get(hc)
                     if cur is None or it1 < cur[0]:
                         reached[hc] = (it1, tn, bcode, dep, arr,
-                                       [stops[k][0] for k in range(idx, j + 1)])
+                                       [stops[k][0] for k in range(idx, j + 1)], s[3])
     if not reached:
         return []
 
@@ -455,7 +460,29 @@ def one_transfer(boards, alights, day3=None):
     # leg 2: hub -> destination with a feasible connection
     journeys = []
     for hc in top:
-        it1, t1, bcode, dep1, arr_hub, path1 = reached[hc]
+        it1, t1, bcode, dep1, arr_hub, path1, arr_day1 = reached[hc]
+        # The buffer must cover not just a floor but the incoming train's
+        # TYPICAL delay: if train 1 is usually p50 min late, a shorter buffer
+        # means you miss the connection more often than not. Computed ONCE per
+        # hub (t1/hc/arr_hub are loop-invariant across the tn2 candidates below)
+        # — a handful of model calls per search, not one per candidate.
+        d1 = TRAIN_DELAY.get(t1)
+        p50 = None
+        if predict_ctx and d1 and d1.get("nObs", 0) >= 15:
+            cum = TRAIN_CUMDIST.get(t1) or {}
+            dist = cum.get(hc)
+            tot = max(cum.values()) if cum else 0
+            p50 = metrics.predicted_p50(
+                d1.get("avgMins"), metrics.infer_tier(t1, TRAIN_NAME.get(t1)),
+                predict_ctx.get("dow"), predict_ctx.get("month"),
+                dist_from_origin=dist, total_km=tot, sched_hour=arr_hub // 60,
+                day_offset=max(0, (arr_day1 or 1) - 1))
+        if p50 is None and d1 and d1.get("p50") is not None:
+            p50 = d1["p50"]           # fall back to the flat measured p50
+        min_buf = CONN_MIN_BUFFER
+        if p50 is not None:
+            min_buf = max(CONN_MIN_BUFFER, min(round(p50), 90))
+
         for tn2, idx in STATION_IDX.get(hc, []):
             if tn2 == t1 or not runs_on(tn2, day3):
                 continue
@@ -470,15 +497,6 @@ def one_transfer(boards, alights, day3=None):
             # conservative (we may miss overnight connections, not invent bad
             # ones). Proper day-aware connections land with Step 3 delay work.
             wait = (dep2 - arr_hub) % 1440
-            # The buffer must cover not just a floor but the incoming train's
-            # TYPICAL delay: if train 1 is usually p50 min late, a shorter buffer
-            # means you miss the connection more often than not. Use measured p50
-            # when we have it (capped so a chronically-late train doesn't kill
-            # every transfer through the hub).
-            d1 = TRAIN_DELAY.get(t1)
-            min_buf = CONN_MIN_BUFFER
-            if d1 and d1.get("p50") is not None:
-                min_buf = max(CONN_MIN_BUFFER, min(round(d1["p50"]), 90))
             if wait < min_buf or wait > CONN_MAX_WAIT:
                 continue
             for j in range(idx + 1, len(stops)):

@@ -6,6 +6,39 @@ def _routes(client, frm, to, **q):
     return client.get("/api/routes", params={"from": frm, "to": to, **q}).json()
 
 
+# --- real road-routing fallback: pure logic, no DB/live service needed -----
+def test_road_km_mins_uses_real_routing_when_available(monkeypatch):
+    from app import engine
+    monkeypatch.setattr(engine.roads, "route", lambda *a, **k: {"km": 5.5, "mins": 12.0})
+    km, mins = engine._road_km_mins([77.2, 28.6], [77.1, 28.5], 999)
+    assert (km, mins) == (5.5, 12.0)
+
+
+def test_road_km_mins_falls_back_when_routing_unavailable(monkeypatch):
+    from app import engine
+    monkeypatch.setattr(engine.roads, "route", lambda *a, **k: None)
+    km, mins = engine._road_km_mins([77.2, 28.6], [77.1, 28.5], 42)
+    assert km == 42 and mins is None
+
+
+def test_road_km_mins_falls_back_when_coords_missing():
+    from app import engine
+    km, mins = engine._road_km_mins(None, [77.1, 28.5], 10)
+    assert km == 10 and mins is None
+
+
+def test_road_leg_uses_real_mins_when_given():
+    from app import engine
+    leg = engine._road_leg("x", "A", "B", km=50, mins=37)
+    assert leg["durationMins"] == 37   # not km/ROAD_KMPH*60, which would be 75
+
+
+def test_road_leg_derives_duration_from_km_when_no_mins():
+    from app import engine
+    leg = engine._road_leg("x", "A", "B", km=engine.ROAD_KMPH)  # 1 hour at flat speed
+    assert leg["durationMins"] == 60
+
+
 def test_direct_corridor_returns_many(client, need_engine):
     d = _routes(client, "Gorakhpur", "Prayagraj")
     assert len(d["routes"]) >= 8  # not capped at the old 6
@@ -299,3 +332,19 @@ def test_regulated_fares_unchanged_by_date(client, need_engine):
     assert shared, "expected overlapping regulated trains across the two dates"
     for tn in shared:
         assert a[tn] == b[tn], f"regulated train {tn} fare moved with date ({a[tn]} vs {b[tn]})"
+
+
+def test_transfer_routes_still_work_with_predicted_gate(client, need_engine):
+    # Fix 3: graph.one_transfer's feasibility gate now consults the predicted
+    # (date-conditioned) p50 when available, not just the flat measured one.
+    # Regression guard: the transfer pipeline must still return sane routes,
+    # and every displayed connection safety must stay in bounds.
+    import datetime as _dt
+    future = (_dt.date.today() + _dt.timedelta(days=30)).isoformat()
+    d = _routes(client, "Gorakhpur", "Puri", date=future)
+    transfers = [r for r in d["routes"] if r.get("transfers") == 1]
+    assert transfers, "expected at least one transfer route"
+    for r in transfers:
+        safety = r.get("connectionSafetyPct")
+        if safety is not None:
+            assert 35 <= safety <= 98

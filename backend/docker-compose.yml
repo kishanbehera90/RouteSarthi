@@ -17,15 +17,24 @@ services:
     ports:
       - "6379:6379"
 
-  # Self-hosted road routing for first/last-mile legs. Build the India OSM
-  # extract per the README before first run.
-  # osrm:
-  #   image: osrm/osrm-backend
-  #   command: osrm-routed --algorithm mld /data/india-latest.osrm
-  #   ports:
-  #     - "5000:5000"
-  #   volumes:
-  #     - ./data/osrm:/data
+  # Self-hosted road routing for first/last-mile legs. NOT meant to run on
+  # this machine — neither this sandboxed dev environment nor the developer's
+  # own Windows machine has Docker. Runs instead on a dedicated persistent VM
+  # (see backend/README.md's "OSRM setup runbook"), used by both local dev
+  # and production via OSRM_URL — same pattern as Supabase Postgres. This
+  # service definition is kept as the reference container spec (usable via
+  # `docker compose up osrm` if the VM itself has docker-compose available;
+  # the README runbook uses plain `docker run` instead, which needs nothing
+  # beyond Docker itself). Build the India OSM extract per the README before
+  # first run.
+  osrm:
+    image: osrm/osrm-backend
+    command: osrm-routed --algorithm mld /data/india-latest.osrm
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data/osrm:/data
+    restart: unless-stopped
 
 volumes:
   pgdata:

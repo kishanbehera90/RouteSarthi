@@ -7,6 +7,13 @@ class Settings(BaseSettings):
 
     database_url: str = ""
     redis_url: str = ""
+    # Real road-routing for first/last-mile legs (app/roads.py). ors_api_key
+    # (OpenRouteService, free tier, simple signup) is the default path — set
+    # osrm_url instead to switch to a self-hosted OSRM instance at any time,
+    # no code changes needed; osrm_url takes priority when both are set. Both
+    # optional — with neither set, road legs fall back to the haversine
+    # estimate that existed before real road-routing.
+    ors_api_key: str = ""
     osrm_url: str = ""
     # RapidAPI (IRCTC1) — free tier is ~10 calls/month, so every use must be
     # budget-guarded. Used for train-validity spot checks / lazy refresh.

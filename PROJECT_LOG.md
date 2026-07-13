@@ -269,6 +269,137 @@ must be set to `frontend/`.)
 ---
 
 ## Changelog
+- **2026-07-13 (OSRM real road-routing wired in, plus CI)** — `osrm_url` had
+  been a config field since Phase B, read by zero runtime code; all road-leg
+  numbers (first/last-mile access + the standalone direct-road option) were
+  haversine-distance arithmetic with flat constants. New `app/osrm.py` — a
+  thin `httpx` client mirroring `delay_model.py`'s graceful-degradation
+  contract (returns `None` on any failure, never raises) — plus
+  `engine._road_km_mins()` wiring in both call sites, with the haversine
+  fallback now consistently getting the `ROAD_ROUTE_FACTOR` correction that
+  first/last-mile legs had been missing entirely (only the standalone
+  direct-road option had it before).
+  - **Environment reality check:** neither this dev environment nor the
+    user's own machine has Docker, so self-hosted OSRM (the project's
+    original plan) can't run locally at all — it needs one persistent cloud
+    VM, shared by dev and prod via `OSRM_URL`, exactly like Supabase Postgres
+    already works. Complete setup runbook in `backend/README.md`; `docker-
+    compose.yml`'s OSRM service definition completed/uncommented as the
+    equivalent container spec for that VM.
+  - **A real bug found by testing the failure path, not just the happy
+    path:** smoke-tested against OSRM's public demo server first (worked —
+    real routed distances came back sensibly different from the haversine
+    guess), then deliberately pointed `OSRM_URL` at a refused connection to
+    test resilience. A single failed call took **~2.9s** before failing —
+    without a fix, a search with a dozen-plus road legs would pay that cost
+    once PER LEG, and every subsequent search would pay it again for as long
+    as OSRM stayed down (one test request hung past 20s). Added a circuit
+    breaker: one failure disables OSRM for a 30s cooldown, auto-recovers
+    after. Verified: first search after a failure = 3.19s total (pays the
+    cost once); the next search = 1.03s (breaker open, zero network calls).
+    See ENGINEERING_NOTES P22.
+  - **Minimal CI added** (`.github/workflows/ci.yml`): backend `pytest -q`
+    (pure tests always run; DB-gated ones skip gracefully without a
+    `DATABASE_URL` secret) + frontend `lint`/`build`, on every push/PR to
+    `main`. No deploy step — Render/Vercel will handle that independently
+    once connected.
+  - Tests: +18 (OSRM client mocked success/failure/circuit-breaker, engine
+    fallback logic) → 88/88 passing.
+  - **Deployment (Render + Vercel) is next**, now that `OSRM_URL` is a real
+    production env var to set alongside the others.
+- **2026-07-14 (pivot: OpenRouteService as default road-routing backend, OSRM
+  demoted to switch-on-later)** — user found the self-hosted OSRM runbook
+  (VM provisioning, Docker, multi-step graph build) too heavy to want to run
+  right now. Rebuilt `app/osrm.py` into `app/roads.py`: a dual-backend router
+  that tries `OSRM_URL` first (unchanged), then falls back to a new
+  `ors_api_key`-based OpenRouteService client (hosted API, free tier, 5-minute
+  signup, zero infra) — with neither configured, or either unreachable, it
+  still returns `None` and callers fall back to haversine, same contract as
+  before. Setting `OSRM_URL` alone (no code changes) switches the app to
+  self-hosted OSRM later, since it's tried first. `backend/README.md`
+  restructured to lead with the simple ORS signup steps; the OSRM VM runbook
+  is now clearly marked optional/for-later. Tests: renamed/added for the new
+  module (`test_roads.py` replaces `test_osrm.py`) → 91/91 passing.
+  - **Live verification caught a second real bug:** once the user added a
+    real `ORS_API_KEY`, a live search of a cross-origin corridor started
+    logging `429 Too Many Requests` from ORS mid-search. Cause: several
+    candidate routes in one search share the same first/last-mile city pair
+    (e.g. every SAMBALPUR-hub route needs the identical "MANMAD JN → Nashik"
+    leg) — each was firing its own independent network call for the same
+    coordinates, burning through ORS's free-tier rate limit on pure
+    duplicates within a single request. Fix: an in-memory cache in
+    `roads.py` keyed on rounded coordinates, caching only successful lookups
+    (failures still go through the existing circuit breaker so a transient
+    outage can recover). Verified: a cold search of a new corridor takes
+    ~15s (each distinct leg pays one real network call); a repeat search of
+    the same corridor takes ~1s (cache hit, zero network calls) — and the
+    429s stopped entirely. Confirmed end-to-end in the browser too: the
+    route-detail page for Rourkela→Nashik via SAMBALPUR now shows "~221 km
+    road to SAMBALPUR" — the real ORS-routed distance, not the haversine
+    guess. Tests updated to reset the cache between cases → still 91/91.
+  Deployment is next.
+- **2026-07-13 (fare accuracy: isotonic regression, not IRCTC scraping)** —
+  asked for "a program that finds real fares per route." Declined to build an
+  IRCTC scraper (ToS-prohibited) or hardcode "official" fare rates from
+  memory (unverified, risks silently wrong numbers). Instead improved what we
+  already had: `fare_table.json` was a median of real scraped fares bucketed
+  into 50km bands — real data, diluted into ~80 coarse buckets with no
+  monotonicity guarantee (adjacent bucket medians could dip from sampling
+  noise). `etl/load_fares.py` now fits a monotonic isotonic regression per
+  class directly on every (distance, fare) sample (52–345 breakpoints/class,
+  denser where the data is denser); `metrics.real_fare` interpolates between
+  them. Same data, no bucketing, and fare-never-decreases-with-distance is now
+  a mathematical guarantee, not a hope. Verified with a dense 25km-step scan
+  from 50–3000km asserting no dip anywhere. The one place live data would
+  genuinely help — premium/flexi-fare occupancy-based pricing — is left as a
+  cost decision (the reserved `RAPIDAPI_KEY` free tier is ~10 calls/month,
+  fine for spot-checks, not bulk fetching; a paid tier is the user's call to
+  make, not assumed). See ENGINEERING_NOTES P21.
+- **2026-07-13 (delay-model transparency: confidence, staleness, multi-day risk)** —
+  four Part-C product gaps closed. `leg_delay_profile` now carries `nObs` +
+  `confidence` (none/limited/moderate/high, from how many real observations
+  back the number) on every tier, and `multiDay` (journey spans 2+ calendar
+  days — the sparsest, riskiest slice) regardless of tier. New
+  `GET /api/delay-model-info` exposes `trained_at`/`n_rows`/MAE; `/health` gets
+  a compact `delayModel: {loaded, ageDays, stale}`, and the backend prints a
+  startup warning past `delay_model.STALE_AFTER_DAYS=180` — a model trained
+  once on a fixed window silently drifts otherwise. `LegTimeline.jsx` shows the
+  observation count inline ("· 22,526 past arrivals"), a caution note on
+  multi-day legs, and the model's data-through date in the Predicted tooltip.
+  Backtest-loop (predicted vs. eventual actual) stays deferred — genuinely
+  blocked on the same collector gap as seat-confirmation, not a "now" item.
+- **2026-07-13 (delay-model coherence fix: one curve, not two disconnected models)** —
+  user caught a real-looking contradiction: a leg's "average delay" (113 min)
+  looked bigger than its 75-min connection buffer, yet connection safety showed
+  56%. Investigated properly instead of trusting or dismissing it: the
+  underlying skew is REAL (the raw measured data for this train already shows
+  avg=91 vs p50=39 — a long tail of catastrophic delays drags the average up
+  while most runs are far better), and the old pre-ML exponential heuristic
+  would have shown ~55% for the same average/buffer — so the math wasn't new
+  or wrong. But auditing surfaced a genuine architecture gap: "average delay"
+  came from a SEPARATELY trained squared-error model with no guaranteed
+  relationship to the five quantile models behind p50/p90/on-time%/connection-
+  safety. Fix: dropped the standalone mean model; `average` is now derived by
+  integrating the SAME quantile curve (added a 0.99 quantile to ground the
+  tail). Average, typical, worst-case and connection safety now read off one
+  coherent distribution — that class of contradiction is structurally
+  impossible now, not just unlikely. Two more fixes from the same audit: (1)
+  the connection feasibility gate (`graph.one_transfer`) now uses the
+  date-conditioned predicted p50 as its minimum-buffer floor when available,
+  not just the flat undated measured one; (2) the UI leads with the TYPICAL
+  (p50) delay instead of the average ("Typically ~57 min late… up to ~250 min
+  on a bad day"), which alone removes most of the visual-contradiction feel
+  even where the math was already fine. Added stratified (per-tier, per-
+  day_offset) calibration reporting to the training script — an aggregate MAE
+  number can't catch a thin, unusual slice (like this train's 3+ day journey)
+  being poorly calibrated; only a stratified report can. **That report then
+  proved the point**: p50-MAE is 19.9 min for same-day legs but **70.7 min for
+  day_offset≥2** — worse than the 29.3-min flat baseline the model exists to
+  beat. Added `delay_model.MAX_RELIABLE_DAY_OFFSET=1`: the model now refuses to
+  predict past day_offset 1 and falls back to measured/modelled, because a
+  model demonstrably worse than what it replaces shouldn't replace it — evidence
+  drove the fix, not intuition. See ENGINEERING_NOTES P20 for the full
+  investigation.
 - **2026-07-13 (Phase C ML: delay prediction + learned connection safety + demand-aware fare advisory)** —
   the first real ML lands, plus an honest reframe of "price prediction".
   - **Delay prediction (roadmap item 1) — DONE.** `etl/train_delay_model.py`

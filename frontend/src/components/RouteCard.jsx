@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { motion } from 'motion/react'
-import { ArrowRight, MapPinned, TrainFront } from 'lucide-react'
+import { ArrowRight, BookmarkX, MapPinned, TrainFront } from 'lucide-react'
 import ModeIcon from './ModeIcon'
 import ReliabilityBadge from './ReliabilityBadge'
 import ConfirmationPill from './ConfirmationPill'
@@ -10,7 +10,7 @@ import ClassFares from './ClassFares'
 import ArrowButton from './ArrowButton'
 import { formatDuration, formatFare } from '../lib/utils'
 
-export default function RouteCard({ route, index = 0, tag = null }) {
+export default function RouteCard({ route, index = 0, tag = null, onRemove }) {
   const modes = route.legs.filter((l) => l.mode !== 'connection').map((l) => l.mode)
   // The train the traveller actually rides most of the way.
   const main =
@@ -51,7 +51,23 @@ export default function RouteCard({ route, index = 0, tag = null }) {
             </span>
           )}
         </div>
-        <ReliabilityBadge score={route.reliability} />
+        <div className="flex shrink-0 items-center gap-1.5">
+          <ReliabilityBadge score={route.reliability} />
+          {onRemove && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault()
+                onRemove(route.id)
+              }}
+              aria-label="Remove from saved trips"
+              title="Remove from saved trips"
+              className="rounded-full p-1.5 text-faint transition hover:bg-risk-50 hover:text-risk-600"
+            >
+              <BookmarkX className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="mt-3 flex items-center gap-2 text-content">

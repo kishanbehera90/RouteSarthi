@@ -4,7 +4,7 @@ import { apiFetch } from '../lib/api'
 
 export const useJourneyStore = create(
   persist(
-    (set) => ({
+    (set, get) => ({
       search: { from: '', to: '', date: '', pref: 'confirmed' },
       setSearch: (patch) => set((s) => ({ search: { ...s.search, ...patch } })),
 
@@ -87,6 +87,22 @@ export const useJourneyStore = create(
       // never sees the previous user's personalization, even for a frame.
       resetPersonalization: () =>
         set({ savedTrips: [], savedTripsLoaded: false, recentSearches: [] }),
+
+      // --- delay model metadata (public, not per-user) — fetched once and
+      // cached, used to enrich the "Predicted" chip tooltip with what data
+      // the model is actually based on. ---
+      delayModelInfo: null,
+      delayModelInfoLoaded: false,
+      loadDelayModelInfo: async () => {
+        if (get().delayModelInfoLoaded) return
+        try {
+          const res = await fetch('/api/delay-model-info')
+          const data = await res.json()
+          set({ delayModelInfo: data.loaded === false ? null : data, delayModelInfoLoaded: true })
+        } catch {
+          set({ delayModelInfoLoaded: true })
+        }
+      },
     }),
     {
       name: 'routesarthi-journey',

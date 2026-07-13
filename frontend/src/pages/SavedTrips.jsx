@@ -1,6 +1,8 @@
 import { Link } from 'react-router-dom'
 import { Bookmark } from 'lucide-react'
 import { useJourneyStore } from '../store/useJourneyStore'
+import { useToastStore } from '../store/useToastStore'
+import BackLink from '../components/BackLink'
 import RouteCard from '../components/RouteCard'
 import EyebrowLabel from '../components/EyebrowLabel'
 import ArrowButton from '../components/ArrowButton'
@@ -16,10 +18,18 @@ function savedOnLabel(iso) {
 export default function SavedTrips() {
   const savedTrips = useJourneyStore((s) => s.savedTrips)
   const savedTripsLoaded = useJourneyStore((s) => s.savedTripsLoaded)
+  const removeTrip = useJourneyStore((s) => s.removeTrip)
+  const toast = useToastStore((s) => s.toast)
+
+  const handleRemove = (routeId) => {
+    removeTrip(routeId)
+    toast({ message: 'Removed from saved trips', tone: 'info' })
+  }
 
   if (!savedTripsLoaded) {
     return (
       <div className="mx-auto max-w-5xl">
+        <BackLink />
         <EyebrowLabel>Your trips</EyebrowLabel>
         <h1 className="mt-3 font-display text-xl font-bold text-content">Saved trips</h1>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -48,6 +58,7 @@ export default function SavedTrips() {
 
   return (
     <div className="mx-auto max-w-5xl">
+      <BackLink />
       <EyebrowLabel>Your trips</EyebrowLabel>
       <h1 className="mt-3 font-display text-xl font-bold text-content">Saved trips</h1>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -59,7 +70,7 @@ export default function SavedTrips() {
             {savedOnLabel(route.savedAt) && (
               <p className="mb-1.5 text-xs text-faint">Saved on {savedOnLabel(route.savedAt)}</p>
             )}
-            <RouteCard route={route} />
+            <RouteCard route={route} onRemove={handleRemove} />
           </div>
         ))}
       </div>

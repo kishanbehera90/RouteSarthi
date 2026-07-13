@@ -117,7 +117,35 @@ def test_leg_delay_profile_measured_when_no_context():
     measured = {"avgMins": 40, "onTimePct": 55, "p90": 120, "nObs": 5000}
     prof = metrics.leg_delay_profile("12951", "MUMBAI RAJDHANI", 1400, 15, measured=measured)
     assert prof["delaySource"] == "measured"
-    assert prof["avgMins"] == 40
+    assert prof["nObs"] == 5000
+    assert prof["confidence"] == "high"
+
+
+# --- confidence signal + multi-day uncertainty flag --------------------------
+def test_confidence_label_thresholds():
+    assert metrics.confidence_label(0) == "none"
+    assert metrics.confidence_label(None) == "none"
+    assert metrics.confidence_label(50) == "limited"
+    assert metrics.confidence_label(500) == "moderate"
+    assert metrics.confidence_label(5000) == "high"
+
+
+def test_leg_delay_profile_modelled_has_no_confidence():
+    prof = metrics.leg_delay_profile("19038", "AVADH EXP", 1200, 20)
+    assert prof["nObs"] == 0
+    assert prof["confidence"] == "none"
+
+
+def test_leg_delay_profile_flags_multiday_regardless_of_tier():
+    # The multi-day uncertainty flag is about the JOURNEY, not which delay tier
+    # ends up being used — a modelled leg on day 3 is just as uncertain as a
+    # measured one would be.
+    prof = metrics.leg_delay_profile("19038", "AVADH EXP", 1200, 20,
+                                      context={"dow": 1, "month": 6, "day_offset": 2})
+    assert prof["multiDay"] is True
+    prof2 = metrics.leg_delay_profile("19038", "AVADH EXP", 1200, 20,
+                                       context={"dow": 1, "month": 6, "day_offset": 0})
+    assert prof2["multiDay"] is False
 
 
 def test_delay_model_cdf_monotone_and_bounded():
@@ -127,6 +155,70 @@ def test_delay_model_cdf_monotone_and_bounded():
     hi = delay_model.cdf(q, 90)
     assert 0.02 <= lo <= hi <= 0.99
     assert delay_model.cdf(q, 15) >= delay_model.cdf(q, 5)
+
+
+# --- mean-vs-quantile coherence (P20 regression) -----------------------------
+# A user spotted a leg where "average delay" looked bigger than the connection
+# buffer, next to a connection-safety % that made it look like the two numbers
+# disagreed. Root cause: the average and the quantiles came from two
+# INDEPENDENTLY trained models with no guaranteed relationship. Fix: derive the
+# average by integrating the quantile curve itself — these tests guard against
+# that separation ever being reintroduced.
+def test_mean_from_quantiles_matches_symmetric_distribution():
+    from app import delay_model
+    # A roughly symmetric spread around 50 should integrate close to 50.
+    q = {0.1: 20, 0.25: 35, 0.5: 50, 0.75: 65, 0.9: 80, 0.99: 95}
+    mean = delay_model.mean_from_quantiles(q)
+    assert 40 <= mean <= 60
+
+
+def test_mean_from_quantiles_reflects_right_skew():
+    # A heavily right-skewed distribution (typical of real train delays: most
+    # trips are fine, a tail is catastrophic) must show mean > median — the
+    # exact shape that made this bug look like a contradiction, except now
+    # it's read off ONE curve instead of a second, unrelated model.
+    from app import delay_model
+    q = {0.1: 0, 0.25: 10, 0.5: 30, 0.75: 60, 0.9: 150, 0.99: 500}
+    mean = delay_model.mean_from_quantiles(q)
+    assert mean > q[0.5]
+
+
+def test_mean_from_quantiles_never_negative():
+    from app import delay_model
+    q = {0.1: -5, 0.25: -1, 0.5: 2, 0.75: 10, 0.9: 20, 0.99: 40}
+    assert delay_model.mean_from_quantiles(q) >= 0
+
+
+def test_predict_refuses_multiday_journeys():
+    # Stratified calibration on the trained model showed p50-MAE of 70.7 min
+    # for day_offset>=2 (multi-day journeys) — worse than the ~29 min flat
+    # baseline. The model must refuse to predict there so a demonstrably worse
+    # number can't override the measured/modelled fallback.
+    from app import delay_model
+    import pytest
+    if not delay_model.have_model():
+        pytest.skip("delay_model.joblib not present")
+    ctx = {"baseline": 60, "tier": "express", "dow": 2, "month": 6,
+           "dist_from_origin": None, "total_km": 0, "sched_hour": 10, "day_offset": 2}
+    assert delay_model.predict(ctx) is None
+    ctx["day_offset"] = 1
+    assert delay_model.predict(ctx) is not None
+
+
+def test_predict_avg_is_derived_from_its_own_quantiles():
+    # Structural guard: predict()'s avgMins must equal mean_from_quantiles of
+    # the SAME quantiles dict it returns — not an independent model's output.
+    # If someone reintroduces a separately-fit mean model, this fails.
+    from app import delay_model
+    import pytest
+    if not delay_model.have_model():
+        pytest.skip("delay_model.joblib not present")
+    ctx = {"baseline": 60, "tier": "express", "dow": 2, "month": 6,
+           "dist_from_origin": None, "total_km": 0, "sched_hour": 10, "day_offset": 0}
+    dist = delay_model.predict(ctx)
+    assert dist is not None
+    expected = delay_model.mean_from_quantiles(dist["quantiles"])
+    assert abs(dist["avgMins"] - max(0.0, expected)) < 1e-6
 
 
 # --- first-mile access (shared by route_reliability AND the engine's
@@ -173,6 +265,32 @@ def test_real_fare_monotonic_in_distance():
     f1500 = metrics.real_fare("SL", 1500)
     if f500 and f1500:                                     # only if the table is present
         assert f1500 > f500
+
+
+# --- isotonic fare curve (P21): dense monotonic interpolation, not 50km buckets ---
+def test_real_fare_strictly_non_decreasing_across_a_dense_scan():
+    # The whole point of isotonic regression over bucket-medians: fare must
+    # never dip anywhere, not just at a couple of hand-picked distances.
+    if not metrics.have_real_fares():
+        return
+    prev = 0
+    for km in range(50, 3000, 25):
+        fare = metrics.real_fare("SL", km)
+        if fare is None:
+            continue
+        assert fare >= prev, f"fare dipped at {km} km: {fare} < {prev}"
+        prev = fare
+
+
+def test_real_fare_extrapolation_never_dips_below_last_real_point():
+    # Beyond the sampled range we extrapolate via the linear fit, but it must
+    # never fall below the last real (isotonic) breakpoint.
+    if not metrics.have_real_fares():
+        return
+    far_beyond = metrics.real_fare("SL", 5000)
+    pts = metrics._FARE.get("class", {}).get("SL")
+    if far_beyond is not None and pts:
+        assert far_beyond >= pts[-1][1]
 
 
 def test_rail_fare_uses_real_when_available_else_model():

@@ -13,6 +13,7 @@ from psycopg.types.json import Json
 from pydantic import BaseModel, Field
 
 from . import auth
+from . import delay_model
 from . import seed
 from . import engine
 from . import graph
@@ -31,6 +32,10 @@ async def lifespan(_app):
         get_pool()  # open the pool now, not on the first request
     except Exception as e:  # noqa: BLE001
         print("startup warmup skipped:", e)
+    if delay_model.is_stale():
+        print(f"WARNING: delay_model.joblib is {delay_model.age_days()} days old "
+              f"(recommended retrain cadence: {delay_model.STALE_AFTER_DAYS} days) — "
+              f"run `python -m etl.train_delay_model` to refresh it.")
     yield
     try:
         from .db import close_pool
@@ -60,7 +65,18 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "phase": "B", "step": 1, "graph": graph.stats()}
+    return {"status": "ok", "phase": "B", "step": 1, "graph": graph.stats(),
+            "delayModel": {"loaded": delay_model.have_model(),
+                           "ageDays": delay_model.age_days(),
+                           "stale": delay_model.is_stale()}}
+
+
+@app.get("/api/delay-model-info")
+def delay_model_info():
+    """Static metadata about the delay-prediction model — surfaced in the
+    frontend's 'Predicted' tooltip so users can see what the number is
+    actually based on (data through which date), not just that it's ML."""
+    return delay_model.info() or {"loaded": False}
 
 
 @app.get("/api/corridors")

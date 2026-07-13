@@ -10,10 +10,21 @@ algorithm family as LightGBM, but no native OpenMP wheel to deploy) on
 serve-time-safe features only, and serializes it to app/data/delay_model.joblib.
 metrics.leg_delay_profile loads it and adds a delaySource="predicted" tier.
 
-We predict a COHERENT DISTRIBUTION, not just a mean: one squared-error model for
-the average, plus quantile models at {0.1,0.25,0.5,0.75,0.9}. p90, on-time %
-(P(delay<=30)) and connection safety (P(delay<=buffer)) are all derived from
-that one predicted CDF, so they can never disagree.
+We predict a COHERENT DISTRIBUTION, ONLY from quantile models — deliberately NOT
+a separately-fit mean model. An earlier version trained a 6th squared-error
+model for the average; that model has no mathematical link to the 5 quantile
+models (each is fit independently), so the displayed "average delay" could
+disagree with the displayed p50/p90 on real predictions — exactly the kind of
+mismatch a user would (rightly) flag as "the average is bigger than my buffer
+but you're telling me I'm 56% safe?" It's not that the safety % was wrong (it
+reads off the quantile curve correctly — real Indian long-haul delay
+distributions ARE heavily right-skewed, average >> median, which is already
+true in the raw measured data, not something ML invented) — it's that showing
+an average from an UNRELATED model next to that curve invites exactly that
+reading. Fix: derive "average" by numerically integrating the SAME quantile
+curve (trapezoid rule over quantile levels {0.1,0.25,0.5,0.75,0.9,0.99}, with a
+flat extrapolation above p99). Average, p50, p90 and connection safety are now
+ALL read off one curve, by construction — they cannot disagree.
 
 Features (all known at PLAN time — no live upstream delay, which we don't have):
   baseline          train's historical avg delay (train_delays.avg_delay)
@@ -42,7 +53,8 @@ SRC_SCHED = os.path.join(_RAW, "combined_schedule.csv")
 SRC_DETAILS = os.path.join(_RAW, "train_details.csv")
 OUT = os.path.join(os.path.dirname(__file__), "..", "app", "data", "delay_model.joblib")
 
-QUANTILES = [0.1, 0.25, 0.5, 0.75, 0.9]
+QUANTILES = [0.1, 0.25, 0.5, 0.75, 0.9, 0.99]  # 0.99 exists to ground the mean's
+                                                 # tail extrapolation, not to be shown raw in the UI
 CAP_PER_TRAIN = 400        # reservoir cap per train — bounds memory + stops busy
                            # trains dominating. ~7k trains -> ~2.8M rows target.
 DELAY_MIN, DELAY_MAX = -120, 1440   # clamp, matches load_delays
@@ -192,12 +204,33 @@ def stream_sample(baselines, sched, total, tiers):
     return out
 
 
+def _stratified_report(X_te, y_te, q_models, group_name, group_vals):
+    """MAE + quantile coverage broken out by a slice (tier / day_offset bucket)
+    instead of one aggregate number — an aggregate can hide a thin, poorly-
+    calibrated slice (e.g. multi-day journeys) entirely. Skips slices with too
+    few held-out rows to report anything meaningful from."""
+    import numpy as np
+    print(f"stratified calibration by {group_name}:", flush=True)
+    for gv in sorted(set(group_vals)):
+        mask = group_vals == gv
+        n = int(mask.sum())
+        if n < 200:
+            print(f"  {group_name}={gv}: n={n} (too few held-out rows — skipping)", flush=True)
+            continue
+        p50_pred = q_models[0.5].predict(X_te[mask])
+        mae = float(np.mean(np.abs(p50_pred - y_te[mask])))
+        cov90 = float(np.mean(y_te[mask] <= q_models[0.9].predict(X_te[mask])))
+        print(f"  {group_name}={gv}: n={n}  p50-MAE={mae:.1f} min  "
+              f"p90 coverage={cov90:.3f} (nominal 0.900)", flush=True)
+
+
 def main():
     import numpy as np
     import pandas as pd
     from sklearn.ensemble import HistGradientBoostingRegressor
     from sklearn.model_selection import train_test_split
     import joblib
+    from app import delay_model
 
     print("loading feature sources...", flush=True)
     baselines = load_baselines()
@@ -225,16 +258,24 @@ def main():
                   min_samples_leaf=200, categorical_features=cat_idx,
                   early_stopping=True, validation_fraction=0.1, random_state=42)
 
-    print("training mean model...", flush=True)
-    mean_model = HistGradientBoostingRegressor(loss="squared_error", **common).fit(X_tr, y_tr)
-
+    # ONLY quantile models — no separately-fit mean model. See module docstring:
+    # a mean model fit independently of these has no guaranteed relationship to
+    # them, which is exactly what let "average delay" visually contradict the
+    # displayed p50/p90/connection-safety on a real prediction. "Average" is
+    # derived from THESE SAME quantiles at serve time (delay_model.mean_from_quantiles).
     q_models = {}
     for q in QUANTILES:
         print(f"training quantile {q}...", flush=True)
         q_models[q] = HistGradientBoostingRegressor(loss="quantile", quantile=q, **common).fit(X_tr, y_tr)
 
     # --- evaluation vs the flat-baseline it must beat ---
-    pred_mean = mean_model.predict(X_te)
+    # Compare the QUANTILE-DERIVED mean (the one actually served) against the
+    # flat baseline — not a separate mean model's output, since that model no
+    # longer exists.
+    pred_mean = np.array([
+        delay_model.mean_from_quantiles({q: v for q, v in zip(QUANTILES, row)})
+        for row in np.column_stack([q_models[q].predict(X_te) for q in QUANTILES])
+    ])
     mae_model = float(np.mean(np.abs(pred_mean - y_te)))
     mae_base = float(np.mean(np.abs(X_te[:, FEATURES.index("baseline")] - y_te)))
     print(f"\nheld-out MAE: model={mae_model:.1f} min  vs  flat-baseline={mae_base:.1f} min  "
@@ -245,9 +286,18 @@ def main():
         cover = float(np.mean(y_te <= q_models[q].predict(X_te)))
         print(f"  q={q}: covered {cover:.3f}", flush=True)
 
+    # Stratified diagnostics — catches exactly the "sparse slice, unreliable
+    # prediction" scenario an aggregate MAE/coverage number hides. Diagnostic
+    # only; does not change what gets served.
+    tier_names = {v: k for k, v in _TIER_CODE.items()}
+    tier_vals = np.array([tier_names.get(int(t), "?") for t in X_te[:, FEATURES.index("tier")]])
+    _stratified_report(X_te, y_te, q_models, "tier", tier_vals)
+    day_off = X_te[:, FEATURES.index("day_offset")]
+    day_bucket = np.where(day_off <= 0, "0", np.where(day_off == 1, "1", "2+"))
+    _stratified_report(X_te, y_te, q_models, "day_offset", day_bucket)
+
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     joblib.dump({
-        "mean": mean_model,
         "quantiles": q_models,
         "quantile_levels": QUANTILES,
         "features": FEATURES,

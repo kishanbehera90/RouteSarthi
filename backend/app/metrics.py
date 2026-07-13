@@ -10,6 +10,7 @@ to real numbers once the collector / a Kaggle delay set lands (Step 3).
 
 Everything here is surfaced in the UI with an "est." affordance.
 """
+import bisect
 import datetime
 import json
 import math
@@ -18,12 +19,15 @@ import os
 from . import delay_model
 
 # --- real IRCTC fare table (built from price_data.csv) ----------------------
-# Median totalFare (full fare incl. surcharges + GST) per (class, 50-km band),
-# with a per-class linear fit for distances outside the sampled bands. Built by
-# etl/build_fares (see scripts). When present, these REAL medians replace the
+# Per-class MONOTONIC breakpoints from an isotonic regression fit directly on
+# every real (distance, fare) sample — not a 50km-bucket median. Guarantees
+# fare never decreases with distance and uses every sample instead of diluting
+# ~300k rows into ~80 coarse buckets. Built by etl/load_fares.py (see
+# ENGINEERING_NOTES P21 for why). A per-class linear fit covers distances
+# beyond the sampled range. When present, these REAL fares replace the
 # modelled per-km fare below and are tagged fareSource="measured".
 _FARE_PATH = os.path.join(os.path.dirname(__file__), "data", "fare_table.json")
-_FARE = {"band": 50, "class": {}, "fit": {}}
+_FARE = {"class": {}, "fit": {}}
 try:
     with open(_FARE_PATH, encoding="utf-8") as _f:
         _FARE = json.load(_f)
@@ -33,23 +37,30 @@ except (OSError, ValueError):
 
 def real_fare(class_code, km):
     """Real IRCTC fare for a class over `km`, or None if we have no data for it.
-    Prefers the median of the matching 50-km band; falls back to the per-class
-    linear fit; interpolates nothing fancier — bands are dense enough."""
+    Linearly interpolates between the class's monotonic breakpoints (dense
+    enough, from tens of thousands of real samples per class, that this is a
+    smooth curve in practice, not a coarse approximation). Beyond the sampled
+    range, extrapolates via the linear fit — but never below the last real
+    breakpoint, since fare must keep rising with distance, not dip on
+    extrapolation noise."""
     if km is None or km <= 0:
         return None
     cls = (class_code or "").strip().upper()
-    band = _FARE.get("band", 50)
-    tbl = _FARE.get("class", {}).get(cls)
-    if tbl:
-        band_hi = int((km // band) + 1) * band
-        # exact band, else nearest sampled band on either side
-        if str(band_hi) in tbl:
-            return tbl[str(band_hi)]
-        keys = sorted(int(k) for k in tbl)
-        if keys:
-            nearest = min(keys, key=lambda k: abs(k - band_hi))
-            if abs(nearest - band_hi) <= 3 * band:
-                return tbl[str(nearest)]
+    pts = _FARE.get("class", {}).get(cls)
+    if pts:
+        if km <= pts[0][0]:
+            return pts[0][1]
+        if km >= pts[-1][0]:
+            fit = _FARE.get("fit", {}).get(cls)
+            if fit:
+                return max(pts[-1][1], round(fit["rate"] * km + fit["base"]))
+            return pts[-1][1]
+        xs = [p[0] for p in pts]
+        i = bisect.bisect_right(xs, km)
+        (x0, y0), (x1, y1) = pts[i - 1], pts[i]
+        if x1 == x0:
+            return round(y0)
+        return round(y0 + (km - x0) / (x1 - x0) * (y1 - y0))
     fit = _FARE.get("fit", {}).get(cls)
     if fit:
         return max(30, round(fit["rate"] * km + fit["base"]))
@@ -168,21 +179,45 @@ def _p_within(minutes, mean):
     return 1 - math.exp(-minutes / max(6.0, mean))
 
 
+def confidence_label(n_obs):
+    """Coarse, honest confidence signal from how many real delay observations
+    back a number — a prediction refined from 20,000 observed arrivals and one
+    refined from 16 look identical without this. Thresholds are round numbers,
+    not fit to anything; the point is distinguishing "plenty of evidence" from
+    "thin but real" from "none", not precision."""
+    if not n_obs:
+        return "none"
+    if n_obs >= 1000:
+        return "high"
+    if n_obs >= 100:
+        return "moderate"
+    return "limited"
+
+
 def leg_delay_profile(train_no, name, km, halts, measured=None, context=None):
     """{avgMins, onTimePct, tier, p90, delaySource} for one train leg (predicted
-    tier also carries p50 + quantiles).
+    tier also carries p50 + quantiles). Every tier also carries `nObs` (real
+    observation count backing the number — 0/None for modelled, since that tier
+    has none by definition) and `multiDay` (True when the journey to this stop
+    spans 2+ calendar days — the sparsest, least-certain slice regardless of
+    which tier ends up being used).
 
     Three tiers, best first:
       - PREDICTED: an ML model (etl/train_delay_model) conditioned on the trip —
         day-of-week, month, position along the route. Used only on a DATED search
-        for a train we have a measured baseline for. Everything is derived from
-        one coherent predicted distribution (p90, on-time%, connection safety).
+        for a train we have a measured baseline for, and only up to
+        delay_model.MAX_RELIABLE_DAY_OFFSET days into the journey (the model's
+        own stratified calibration showed it's WORSE than the flat average past
+        that point). Everything is derived from one coherent predicted
+        distribution (p90, on-time%, connection safety).
       - MEASURED: the train's flat year-long average (train_delays). Undated
-        search, or a train the model doesn't cover.
+        search, a train the model doesn't cover, or a too-far-in journey day.
       - MODELLED: the crude tier/km/halts formula. No real data for this train.
-    Same 5-key shape either way, so the frontend on-time bar just renders it."""
+    Same key shape either way, so the frontend on-time bar just renders it."""
     tier = infer_tier(train_no, name)
     has_baseline = bool(measured and measured.get("nObs", 0) >= 15)
+    n_obs = measured.get("nObs") if measured else None
+    multi_day = bool(context and (context.get("day_offset") or 0) >= 2)
 
     # 1) predicted — needs a dated context AND a measured baseline to refine
     if (has_baseline and context and context.get("dow") is not None
@@ -198,17 +233,37 @@ def leg_delay_profile(train_no, name, km, halts, measured=None, context=None):
                     "tier": tier,
                     "p50": round(dist["p50"]) if dist.get("p50") is not None else None,
                     "p90": round(dist["p90"]) if dist.get("p90") is not None else None,
-                    "quantiles": dist["quantiles"], "delaySource": "predicted"}
+                    "quantiles": dist["quantiles"], "delaySource": "predicted",
+                    "nObs": n_obs, "confidence": confidence_label(n_obs), "multiDay": multi_day}
 
     # 2) measured
     if has_baseline:
         return {"avgMins": round(measured["avgMins"]), "onTimePct": round(measured["onTimePct"]),
-                "tier": tier, "p90": measured.get("p90"), "delaySource": "measured"}
+                "tier": tier, "p90": measured.get("p90"), "delaySource": "measured",
+                "nObs": n_obs, "confidence": confidence_label(n_obs), "multiDay": multi_day}
 
     # 3) modelled
     avg = round(expected_delay(tier, km, halts))
     return {"avgMins": avg, "onTimePct": round(100 * _p_within(ON_TIME_THRESHOLD, avg)),
-            "tier": tier, "p90": None, "delaySource": "modelled"}
+            "tier": tier, "p90": None, "delaySource": "modelled",
+            "nObs": 0, "confidence": "none", "multiDay": multi_day}
+
+
+def predicted_p50(baseline, tier, dow, month, dist_from_origin=None, total_km=0,
+                   sched_hour=-1, day_offset=0):
+    """Thin wrapper for graph.py's connection-feasibility gate: the predicted
+    TYPICAL (p50) delay for a specific dated leg, or None if the model can't
+    produce one (no artifact / no baseline / no date). graph.py has no direct
+    dependency on delay_model — it calls this instead, so the module
+    dependency chain stays one-directional (graph -> metrics -> delay_model,
+    never the reverse) and this feature-assembly logic lives in one place."""
+    if baseline is None or dow is None or month is None:
+        return None
+    ctx = {"baseline": baseline, "tier": tier, "dow": dow, "month": month,
+           "dist_from_origin": dist_from_origin, "total_km": total_km,
+           "sched_hour": sched_hour, "day_offset": day_offset}
+    dist = delay_model.predict(ctx)
+    return dist["p50"] if dist else None
 
 
 def connection_safety(buffer_mins, incoming):

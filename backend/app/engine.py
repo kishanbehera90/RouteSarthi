@@ -12,6 +12,7 @@ heuristic (network resilience + directness), clearly a placeholder until then.
 """
 from . import graph
 from . import metrics
+from . import roads
 from .db import get_pool
 
 # --- tunables -------------------------------------------------------------
@@ -288,9 +289,23 @@ def _delay_ctx(tn, acode, ctx):
             "day_offset": (day - 1) if day else 0}
 
 
-def _road_leg(idx, frm, to, km, fromc=None, toc=None):
+def _road_km_mins(fromc, toc, fallback_km):
+    """Real road (km, mins) from OpenRouteService or self-hosted OSRM (see
+    app/roads.py) when available; else the caller's haversine-based
+    `fallback_km` with mins=None (letting `_road_leg` derive duration from
+    ROAD_KMPH, same as before real road-routing existed). `fromc`/`toc` are
+    [lng, lat] pairs, already computed by every caller for map display."""
+    if fromc and toc:
+        r = roads.route(fromc[1], fromc[0], toc[1], toc[0])
+        if r:
+            return r["km"], r["mins"]
+    return fallback_km, None
+
+
+def _road_leg(idx, frm, to, km, fromc=None, toc=None, mins=None):
+    duration = round(mins) if mins is not None else round(km / ROAD_KMPH * 60)
     return {"id": idx, "mode": "cab", "name": f"{frm} → {to}", "from": frm, "to": to,
-            "durationMins": round(km / ROAD_KMPH * 60), "fareInr": _fare_road(km),
+            "durationMins": duration, "fareInr": _fare_road(km),
             "confirmation": "confirmed", "fromCoords": fromc, "toCoords": toc}
 
 
@@ -436,7 +451,7 @@ def search(from_place, to_place, pref="confirmed", date=None):
 
     # --- one-transfer cross-origin (when few/no through trains) ---
     if len(routes) < 3:
-        for j in graph.one_transfer(o_heads, d_heads, day3):
+        for j in graph.one_transfer(o_heads, d_heads, day3, predict_ctx=ctx if dow is not None else None):
             if not (graph.runs_in_month(j["t1"], month) and graph.runs_in_month(j["t2"], month)):
                 continue
             b, a = o_heads[j["board"]], d_heads[j["alight"]]
@@ -605,6 +620,15 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=None):
     legs = []
     first_km, last_km = b["km"], a["km"]
     bc, ac = _coord(b), _coord(a)
+    # Real road distance/duration via OSRM when available; else the same
+    # haversine estimate as before, now consistently carrying the road-vs-
+    # straight-line factor (previously applied only to the standalone direct-
+    # road option, never to first/last-mile legs). Every downstream use of
+    # first_km/last_km — the road leg itself, its connection note, access_pct,
+    # and the is_cross threshold — reads the SAME resolved number, so the
+    # displayed "~N km road to X" always matches what the leg actually costs.
+    first_km, first_mins = _road_km_mins(ocoord, bc, first_km * ROAD_ROUTE_FACTOR)
+    last_km, last_mins = _road_km_mins(ac, dcoord, last_km * ROAD_ROUTE_FACTOR)
     halts = len(c.get("path") or []) - 2 if c.get("path") else None
     rail_km = _rail_km(c["train"], b["code"], a["code"], c["in_train"])
     dprofile = metrics.leg_delay_profile(c["train"], c["name"], rail_km, halts,
@@ -614,7 +638,7 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=None):
         _route_classes(c["train"]), dprofile["tier"], ctx.get("days_out"), ctx.get("month"))
     reliability = metrics.route_reliability(dprofile["onTimePct"], None, 0, first_km, conf_pct)
     if first_km > 2:
-        legs.append(_road_leg(f"{c['train']}-fm", frm, b["name"], first_km, ocoord, bc))
+        legs.append(_road_leg(f"{c['train']}-fm", frm, b["name"], first_km, ocoord, bc, mins=first_mins))
         legs.append({"id": f"{c['train']}-c1", "mode": "connection", "connectionSafetyPct": None,
                      "bufferMins": None, "note": f"~{round(first_km)} km road to {b['name']}"})
     train_leg = {"id": f"{c['train']}-tr", "mode": "train", "trainNo": c["train"],
@@ -625,7 +649,10 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=None):
                  "fareInr": _fare_rail(c["train"], b["code"], a["code"], c["in_train"], demand_score),
                  "confirmation": conf_state,
                  "delayProfile": {"avgMins": dprofile["avgMins"], "onTimePct": dprofile["onTimePct"],
-                                  "source": dprofile["delaySource"], "p90": dprofile.get("p90")},
+                                  "source": dprofile["delaySource"], "p50": dprofile.get("p50"),
+                                  "p90": dprofile.get("p90"), "nObs": dprofile.get("nObs"),
+                                  "confidence": dprofile.get("confidence"),
+                                  "multiDay": dprofile.get("multiDay", False)},
                  "fromCoords": bc, "toCoords": ac, "pathCoords": _path_coords(c.get("path")),
                  "days": _days_label(c["train"]), "stops": _path_stops(c.get("path")),
                  "halts": halts}
@@ -633,7 +660,7 @@ def _direct_route(frm, to, b, a, c, ocoord, dcoord, ctx=None):
     if last_km > 2:
         legs.append({"id": f"{c['train']}-c2", "mode": "connection", "connectionSafetyPct": None,
                      "bufferMins": None, "note": f"~{round(last_km)} km road to {to}"})
-        legs.append(_road_leg(f"{c['train']}-lm", a["name"], to, last_km, ac, dcoord))
+        legs.append(_road_leg(f"{c['train']}-lm", a["name"], to, last_km, ac, dcoord, mins=last_mins))
 
     is_cross = first_km > 20
     ot = dprofile["onTimePct"]
@@ -686,6 +713,10 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=None):
     legs = []
     first_km, last_km = b["km"], a["km"]
     bc, ac, hc = _coord(b), _coord(a), _hub_coord(j["hub"])
+    # See _direct_route's comment — same OSRM-or-haversine resolution, applied
+    # consistently before any downstream use of first_km/last_km.
+    first_km, first_mins = _road_km_mins(ocoord, bc, first_km * ROAD_ROUTE_FACTOR)
+    last_km, last_mins = _road_km_mins(ac, dcoord, last_km * ROAD_ROUTE_FACTOR)
     km1 = _rail_km(j["t1"], b["code"], j["hub"], j["it1"])
     km2 = _rail_km(j["t2"], j["hub"], a["code"], j["it2"])
     halts1 = len(j.get("path1") or []) - 2 if j.get("path1") else None
@@ -695,7 +726,7 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=None):
     dp2 = metrics.leg_delay_profile(j["t2"], j["t2name"], km2, halts2, measured=graph.TRAIN_DELAY.get(j["t2"]),
                                     context=_delay_ctx(j["t2"], a["code"], ctx))
     if first_km > 2:
-        legs.append(_road_leg(f"{j['t1']}-fm", frm, b["name"], first_km, ocoord, bc))
+        legs.append(_road_leg(f"{j['t1']}-fm", frm, b["name"], first_km, ocoord, bc, mins=first_mins))
         legs.append({"id": f"{j['t1']}-c0", "mode": "connection", "connectionSafetyPct": None,
                      "bufferMins": None, "note": f"~{round(first_km)} km road to {b['name']}"})
     leg1 = {"id": f"{j['t1']}-tr", "mode": "train", "trainNo": j["t1"], "name": f"{j['t1']} {j['t1name'] or ''}".strip(),
@@ -704,7 +735,10 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=None):
             "durationMins": j["it1"], "classFares": _class_fares(j["t1"], b["code"], j["hub"], j["it1"], demand_score),
             "fareInr": _fare_rail(j["t1"], b["code"], j["hub"], j["it1"], demand_score), "confirmation": "confirmed",
             "delayProfile": {"avgMins": dp1["avgMins"], "onTimePct": dp1["onTimePct"],
-                             "source": dp1["delaySource"], "p90": dp1.get("p90")},
+                             "source": dp1["delaySource"], "p50": dp1.get("p50"),
+                             "p90": dp1.get("p90"), "nObs": dp1.get("nObs"),
+                             "confidence": dp1.get("confidence"),
+                             "multiDay": dp1.get("multiDay", False)},
             "fromCoords": bc, "toCoords": hc, "pathCoords": _path_coords(j.get("path1")),
             "days": _days_label(j["t1"]), "stops": _path_stops(j.get("path1")), "halts": halts1}
     legs.append(leg1)
@@ -719,14 +753,17 @@ def _transfer_route(frm, to, b, a, j, ocoord, dcoord, ctx=None):
             "durationMins": j["it2"], "classFares": _class_fares(j["t2"], j["hub"], a["code"], j["it2"], demand_score),
             "fareInr": _fare_rail(j["t2"], j["hub"], a["code"], j["it2"], demand_score), "confirmation": "confirmed",
             "delayProfile": {"avgMins": dp2["avgMins"], "onTimePct": dp2["onTimePct"],
-                             "source": dp2["delaySource"], "p90": dp2.get("p90")},
+                             "source": dp2["delaySource"], "p50": dp2.get("p50"),
+                             "p90": dp2.get("p90"), "nObs": dp2.get("nObs"),
+                             "confidence": dp2.get("confidence"),
+                             "multiDay": dp2.get("multiDay", False)},
             "fromCoords": hc, "toCoords": ac, "pathCoords": _path_coords(j.get("path2")),
             "days": _days_label(j["t2"]), "stops": _path_stops(j.get("path2")), "halts": halts2}
     legs.append(leg2)
     if last_km > 2:
         legs.append({"id": f"{j['t2']}-c2", "mode": "connection", "connectionSafetyPct": None,
                      "bufferMins": None, "note": f"~{round(last_km)} km road to {to}"})
-        legs.append(_road_leg(f"{j['t2']}-lm", a["name"], to, last_km, ac, dcoord))
+        legs.append(_road_leg(f"{j['t2']}-lm", a["name"], to, last_km, ac, dcoord, mins=last_mins))
 
     ot = min(dp1["onTimePct"], dp2["onTimePct"])   # weakest leg
     _real = ("measured", "predicted")
@@ -779,9 +816,10 @@ def _road_route(frm, to, ocoord, dcoord):
     """A direct door-to-door road option (cab/bus). For a travel planner this
     is often the best answer for short hops or poorly-railed pairs — it competes
     with the rail routes and wins on time when it deserves to."""
-    km = graph._haversine_km(ocoord[1], ocoord[0], dcoord[1], dcoord[0]) * ROAD_ROUTE_FACTOR
-    dur = max(15, round(km / ROAD_KMPH * 60))
-    leg = _road_leg("roaddirect", frm, to, km, ocoord, dcoord)
+    fallback_km = graph._haversine_km(ocoord[1], ocoord[0], dcoord[1], dcoord[0]) * ROAD_ROUTE_FACTOR
+    km, mins = _road_km_mins(ocoord, dcoord, fallback_km)
+    leg = _road_leg("roaddirect", frm, to, km, ocoord, dcoord, mins=mins)
+    dur = max(15, leg["durationMins"])
     leg["name"] = f"Road · {frm} → {to}"
     return {
         "id": f"road-{_slug(frm)}-{_slug(to)}",

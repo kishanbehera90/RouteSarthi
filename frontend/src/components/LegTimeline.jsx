@@ -1,37 +1,63 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { ShieldCheck, ShieldAlert, Navigation, ChevronDown } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Navigation, ChevronDown, TriangleAlert } from 'lucide-react'
 import ModeIcon from './ModeIcon'
 import ConfirmationPill from './ConfirmationPill'
 import ConfirmationProbability from './ConfirmationProbability'
 import ClassFares from './ClassFares'
+import { useJourneyStore } from '../store/useJourneyStore'
 import { formatFare } from '../lib/utils'
 
+function formatDate(iso) {
+  return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 // How the on-time / delay number for a leg was produced. The backend tags each
-// train leg's delayProfile.source; we surface it so a "predicted for your date"
-// number is never mistaken for a flat historical average (or a rough estimate).
+// train leg's delayProfile.source; the visible LINE stays short (headline
+// number + %) — everything else (worst-case, observation count, model
+// freshness) moves into the chip's hover tooltip so the card doesn't turn into
+// a paragraph.
 const DELAY_SOURCE = {
   predicted: {
     chip: 'Predicted',
     chipClass: 'bg-brand-50 text-brand-600',
-    tip: 'Estimated for your travel date by a model trained on a year of real arrivals — conditioned on day of week, month and where you get off.',
-    line: (p) => `Predicted ~${p.onTimePct}% on-time · ~${p.avgMins} min delay on your date`,
+    line: (p) =>
+      p.p50 != null
+        ? `~${p.p50} min late (typical) · ${p.onTimePct}% on-time`
+        : `~${p.avgMins} min late (predicted) · ${p.onTimePct}% on-time`,
+    tip: (p, modelInfo) => {
+      let t = 'Typical delay for your travel date — from a model trained on a year of real arrivals.'
+      if (p.p90 != null) t += ` On a bad day, expect up to ~${p.p90} min.`
+      if (p.nObs) t += ` Based on ${p.nObs.toLocaleString('en-IN')} past arrivals${p.confidence === 'limited' ? ' (limited data)' : ''}.`
+      if (modelInfo?.trainedAt) t += ` Model trained through ${formatDate(modelInfo.trainedAt)}.`
+      return t
+    },
   },
   measured: {
     chip: 'Measured',
     chipClass: 'bg-safe-50 text-safe-600',
-    tip: "From a full year of this train's real arrivals.",
-    line: (p) => `Historically ${p.onTimePct}% on time · avg delay ${p.avgMins} min`,
+    line: (p) => `~${p.avgMins} min late (avg) · ${p.onTimePct}% on-time`,
+    tip: (p) => {
+      let t = "Average from a full year of this train's real arrivals."
+      if (p.nObs) t += ` Based on ${p.nObs.toLocaleString('en-IN')} past arrivals.`
+      return t
+    },
   },
   modelled: {
     chip: 'Estimate',
     chipClass: 'bg-sunken text-faint',
-    tip: 'No historical record for this train yet — a rough estimate from its class, distance and number of stops.',
-    line: (p) => `Est. ~${p.onTimePct}% on-time · ~${p.avgMins} min delay`,
+    line: (p) => `~${p.avgMins} min late (est.) · ${p.onTimePct}% on-time`,
+    tip: () => 'No historical record for this train yet — a rough estimate from its class, distance and number of stops.',
   },
 }
 
 function DelayLine({ profile }) {
+  const delayModelInfo = useJourneyStore((s) => s.delayModelInfo)
+  const loadDelayModelInfo = useJourneyStore((s) => s.loadDelayModelInfo)
+  useEffect(() => {
+    loadDelayModelInfo()
+  }, [loadDelayModelInfo])
+
   // Mock corridors carry no source → read as historical (measured).
   const meta = DELAY_SOURCE[profile.source] || DELAY_SOURCE.measured
   return (
@@ -39,13 +65,19 @@ function DelayLine({ profile }) {
       <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-faint">
         <span
           className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${meta.chipClass}`}
-          title={meta.tip}
+          title={meta.tip(profile, delayModelInfo)}
         >
           {meta.chip}
         </span>
         {meta.line(profile)}
       </p>
       <OnTimeBar pct={profile.onTimePct} />
+      {profile.multiDay && (
+        <p className="mt-1.5 flex items-start gap-1.5 text-xs text-caution-600">
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          Multi-day journey — harder to predict, build in extra buffer.
+        </p>
+      )}
     </div>
   )
 }

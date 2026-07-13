@@ -794,6 +794,237 @@ Repeat searches: **~0 ms** (0.00–0.02 ms). ✅
 
 ---
 
+## P20 — "The average is bigger than my buffer, so why does it say 56% safe?"
+
+- **Symptom (user-caught, from a real screenshot):** a leg predicted "~113 min
+  delay" on average, feeding into a connection with a 75-min buffer — yet
+  connection safety showed 56%, which reads as a contradiction ("if it averages
+  worse than my buffer, how am I safe half the time?").
+- **How I found the cause:** reproduced the exact leg (train 13020, the exact
+  date/context) against the live model rather than guessing. Three checks: (1)
+  the displayed % was correct arithmetic on the model's own quantile curve; (2)
+  the *raw measured* data for this train — no ML involved — already showed
+  avg=91 vs p50=39, more than 2x apart, so the skew is real train behavior
+  (long-haul trains have a long tail of catastrophic delays that drag the mean
+  up while most runs are much closer to on-time), not something the model
+  invented; (3) the OLD pre-ML exponential heuristic, fed the same average and
+  buffer, produced 55% — one point off the ML model's 56%. So the "paradox"
+  wasn't new, and it wasn't wrong math — it's the classic mean-vs-median gap on
+  a right-skewed distribution, which is exactly *why* we compute safety from a
+  distribution instead of eyeballing the average against a buffer.
+- **But something WAS genuinely wrong, found while verifying:** the "average
+  delay" and the five quantiles (p10…p90) came from **six independently
+  trained models** — a squared-error model for the mean, plus five separate
+  quantile-loss models. Nothing enforced any relationship between them beyond a
+  post-hoc sort of the quantiles. They happened to roughly agree on this leg,
+  but there was no guarantee they always would — the mean model could in
+  principle predict something that visibly contradicts the quantile curve the
+  UI shows right next to it, for a *different* reason than the real,
+  statistically-legitimate skew.
+- **The fix:** stopped training a separate mean model entirely.
+  `delay_model.mean_from_quantiles()` derives "average delay" by
+  trapezoid-integrating the SAME quantile curve used for p50/p90/on-time%/
+  connection-safety (added a 0.99 quantile purely to ground the tail of that
+  integration). Average, typical (p50), worst-case (p90), and connection
+  safety now all read off one coherent curve — a divergence between "average"
+  and "the rest of the numbers" is no longer *possible by construction*, not
+  just unlikely.
+- **Two more fixes that came out of investigating this properly, not just
+  patching the symptom:**
+  1. The connection *feasibility gate* (which connections even get offered,
+     in `graph.one_transfer`) used the flat, undated measured p50 as its
+     minimum-buffer floor — even on a dated search where a date-conditioned
+     predicted p50 was available and could be worse. Now it uses the
+     predicted p50 when the model can produce one for that date, computed
+     ONCE per hub (not per candidate train) to keep it cheap, falling back to
+     the flat measured p50 otherwise.
+  2. The UI led with "average delay" next to the buffer, which is precisely
+     the number most likely to look self-contradictory on a skewed
+     distribution. `LegTimeline.jsx` now leads with the TYPICAL (p50) delay
+     — "Typically ~57 min late… up to ~250 min on a bad day" — framing the
+     average's skew explicitly instead of implicitly.
+- **Why this fix (and what I didn't do):** I didn't just adjust the connection-
+  safety formula or clamp the average closer to the median — that would have
+  hidden a real statistical property (the tail risk that connection safety is
+  SUPPOSED to price in) to make a screenshot look less surprising. The actual
+  bug was architectural (two disconnected models, no consistency guarantee),
+  and the actual UX bug was a display choice (average, not typical, as the
+  headline). Fixing both means the numbers can never disagree again and are
+  honest about what "average" actually means for a skewed distribution,
+  instead of just making the specific complained-about case look nicer.
+- **Also added, not directly requested but found while auditing — and it
+  proved decisive:** stratified calibration reporting in the training script
+  (MAE/coverage broken out by tier and by day_offset bucket), because an
+  aggregate calibration number can't tell you a THIN, unusual slice is poorly
+  calibrated. Running it on the retrained model showed p50-MAE of **19.9 min**
+  at day_offset=0 (same-day, 317k held-out rows), **41.2 min** at day_offset=1,
+  and **70.7 min** at day_offset≥2 (9k rows — exactly this train's multi-day
+  journey class) — worse than the 29.3-min flat baseline the model exists to
+  beat. So for multi-day legs, "predicted" wasn't just imprecise, it was
+  actively worse than the plain historical average. Added
+  `delay_model.MAX_RELIABLE_DAY_OFFSET = 1`: the model now refuses to predict
+  past day_offset 1, falling back to measured/modelled — a demonstrably-worse
+  model shouldn't override a better, simpler number just because it exists.
+  This is the direct, evidence-backed answer to "check the model's accuracy" —
+  not a general "the model seems fine" but a specific number showing exactly
+  where it wasn't, and a targeted fix scoped to that exact failure mode.
+- **Interview soundbite:** "A user's screenshot looked like the model
+  contradicted itself — a huge average delay next to a moderate connection-
+  safety percentage. I didn't just trust that it was fine, and I didn't just
+  patch the number to make the screenshot look better. I reproduced the exact
+  case, confirmed the underlying statistical skew was real (present in the raw
+  measured data, and consistent with what the old non-ML heuristic would have
+  said), and THEN kept auditing — which is how I found that the average and
+  the percentiles were coming from six independently trained models with no
+  guaranteed relationship. The actual fix was architectural: derive the
+  average by integrating the same quantile curve everything else reads from,
+  so that class of contradiction becomes structurally impossible, not just
+  unlikely on this one example."
+
+---
+
+## P21 — Improving fare accuracy without scraping IRCTC
+
+- **The ask:** "write a program that finds all the prices for each route and
+  updates our pricing accuracy" — implicitly, something that automates
+  checking IRCTC's live booking site per route.
+- **Why I didn't build that:** IRCTC's terms of service prohibit automated
+  access to the booking flow, and unofficial scrapers against it have a real
+  history of getting blocked. That's a "don't build this" line, not a
+  technical inconvenience to route around.
+- **What I also declined to do:** hardcode Indian Railways' "official"
+  per-km fare formula from memory. IR's tariff structure IS public — but the
+  exact current numeric rates are revised periodically by government
+  notification, and I don't have a verified, current figure I'd trust enough
+  to ship as ground truth. A wrong-but-confident-looking fare is worse than an
+  honest approximation — the same principle as labelling confirmation "(est.)"
+  instead of inventing precision the data doesn't support.
+- **What actually moved the needle:** the existing `fare_table.json` was a
+  median of real IRCTC fares (from a 2023 scrape) bucketed into 50km bands —
+  real data, but diluted: ~300k samples flattened into ~80 buckets shared
+  across all classes, with two failure modes baked in. (1) A "staircase" —
+  every fare within a 50km band collapses to one number, then jumps at the
+  boundary, when real telescopic tariffs are smooth. (2) No monotonicity
+  guarantee — two adjacent bucket medians could, from sampling noise alone,
+  have the FARTHER bucket price LOWER than the nearer one.
+- **The fix:** replaced the bucket-median with an **isotonic (monotonic)
+  regression** fit directly on every (distance, fare) sample per class — no
+  bucketing at all. `etl/load_fares.py` now uses `sklearn.isotonic.
+  IsotonicRegression` (already a dependency from the delay model), keeps the
+  fit's own step breakpoints (from its PAVA algorithm — 52 to 345 per class,
+  denser where the data is denser, not an arbitrary fixed grid), and
+  `metrics.real_fare` linearly interpolates between them. This uses the SAME
+  data as before — no new source, no scraping — just stops throwing most of
+  it away into coarse buckets. Isotonic regression's core property is exactly
+  what was missing: it CANNOT produce a decreasing fit, so distance-monotonic
+  fares are guaranteed by construction, not by hoping the bucket medians
+  behave. Verified with a dense scan (every 25km from 50 to 3000) asserting
+  fare never dips anywhere, not just at a couple of hand-picked checkpoints.
+- **Why this fix (and what I rejected):** rejected literally shrinking the
+  bucket width (still has both failure modes, just smaller); rejected a fixed
+  high-resolution grid resampled from the fit (arbitrary resolution choice,
+  no better justified than 50km was); isotonic regression's breakpoints are
+  the data telling you where it actually changes shape, not a number I chose.
+- **The actual place a scraper-shaped tool WOULD add value:** premium/flexi
+  fare trains (Rajdhani/Shatabdi/Duronto), whose live price depends on
+  real-time seat occupancy that genuinely isn't knowable without live data.
+  The codebase already reserves the right pattern for this —
+  `settings.rapidapi_key`, planned for IRCTC1 on RapidAPI, used only for tiny
+  budget-guarded spot-checks (~10 calls/month free tier), never bulk fetching.
+  Left as a user decision (a paid tier removes the ceiling but costs money);
+  not built without that call being made explicitly.
+- **Interview soundbite:** "Asked to build a program that finds real fares
+  per route, I flagged upfront that the obvious version — scraping IRCTC's
+  live booking flow — violates its terms of service, so I wasn't going to
+  build that regardless of how it was framed. I also declined to hardcode an
+  'official' fare formula from memory rather than verified data, because a
+  wrong number stated with false confidence is worse than an honest
+  approximation. The actual fix used data we already had, just fit better:
+  isotonic regression instead of bucket-medians, which is the right tool
+  specifically because it makes non-decreasing-with-distance a mathematical
+  guarantee instead of something you hope holds."
+
+---
+
+## P22 — Wiring real road-routing (OSRM) surfaced a slow-failure bug before it shipped
+
+- **The task:** replace first/last-mile road legs' haversine-distance guess
+  with real routed distance/duration via OSRM, the way `PHASE_B_PLAN.md`
+  always intended. `osrm_url` had been a config field since Phase B — read by
+  zero code, no HTTP client existed for it at all.
+- **The environment constraint that shaped the design:** self-hosting OSRM
+  needs Docker, and a live check confirmed Docker isn't available in this
+  sandboxed dev environment OR on the user's own machine (the same constraint
+  that already pushed Postgres to hosted Supabase instead of local Docker,
+  earlier in the project). So OSRM gets the identical treatment: one
+  persistent instance on a small cloud VM, shared by dev and prod via
+  `OSRM_URL` — not something run locally at all.
+- **What I built:** `app/osrm.py`, a thin `httpx` client with the same
+  graceful-degradation contract as `delay_model.py` — returns `None` on ANY
+  failure, never raises. `engine.py`'s `_road_km_mins()` tries it first, falls
+  back to the existing haversine×1.3 estimate otherwise. Along the way, fixed
+  a real pre-existing gap: first/last-mile legs had NO correction factor at
+  all (only the standalone direct-road option applied the ×1.3 factor) —
+  now both paths are consistent, and the fix stays relevant as the fallback
+  even after OSRM is live.
+- **The bug I found by actually testing the fallback, not just the happy
+  path:** I smoke-tested against OSRM's public demo server (fine — the
+  integration worked, real routed distances came back sensibly different
+  from the haversine guess). Then I deliberately pointed `OSRM_URL` at a
+  refused connection to test the OTHER path — the one that matters most for
+  reliability, since a self-hosted VM WILL go down eventually. A single
+  failed call took **~2.9 seconds** on this network before returning
+  `WinError 10061` — nowhere near instant, close to the very timeout I'd set.
+  Without a fix, a single search with a dozen-plus road legs (multiple
+  candidate routes, each with first-mile and last-mile hops) would pay that
+  cost **once per leg** — and EVERY subsequent search would pay it again,
+  for as long as OSRM stayed down. A confirmed request that hung past 20
+  seconds during testing is exactly what a real production outage would do
+  to every user's search, not a one-off local quirk.
+- **The fix:** a circuit breaker in `osrm.py` — one failure disables OSRM for
+  a 30-second cooldown (returning `None` instantly, no network attempt, for
+  every call during that window), then automatically retries after it
+  expires. Also dropped the timeout itself from 3.0s to 1.5s. Verified
+  concretely: first search after a failure took 3.19s total (pays the cost
+  once); the very next search took 1.03s (breaker already open, zero network
+  attempts) — versus the pre-fix behavior of a single request hanging past 20
+  seconds with no end in sight.
+- **Why this fix (and what I rejected):** rejected just lowering the timeout
+  further and calling it done — a lower timeout alone still means EVERY leg
+  of EVERY search pays that cost independently while OSRM is down, just a
+  smaller cost each time; multiplied across many legs it's still materially
+  slow, and it never stops paying it until OSRM recovers. A circuit breaker
+  is the standard answer to "a dependency can be slow-to-fail, and I have
+  many call sites in one request" for exactly this reason — pay the
+  discovery cost once, not once per leg, not once per request.
+- **Impact:** road-leg duration/fare now reflect real routed distance when
+  OSRM is available (verified: e.g. one corridor's leg went from a 243-min
+  haversine-based estimate to a 162-min real-routed one — OSRM found a
+  meaningfully faster real road than the crude factor assumed), with a
+  verified-fast, bounded-cost fallback when it isn't — not a theoretical
+  "should be fine," an actually-measured worst case.
+- **Interview soundbite:** "I didn't just wire up the happy path and call it
+  done — I deliberately tested what happens when the new dependency is down,
+  since a self-hosted service WILL go down eventually. That surfaced a real
+  problem: a single failed call took nearly 3 seconds on this network, and
+  without a circuit breaker, a search with a dozen road legs would pay that
+  cost once per leg, and every subsequent search would pay it again for as
+  long as the outage lasted. The fix — a short cooldown after one failure —
+  is a standard pattern, but I only knew to add it because I measured the
+  actual failure cost instead of assuming 'it'll just fall back fine.'"
+- **Addendum (2026-07-14):** after seeing the full self-hosted OSRM runbook
+  (VM provisioning, Docker, multi-step graph build), the user wanted
+  something they could turn on today without any of that. Generalized
+  `osrm.py` into `roads.py`: same circuit breaker and fallback contract,
+  but now tries `OSRM_URL` first, then falls back to a new OpenRouteService
+  client (hosted API, free tier, signup takes minutes, zero infra) — so ORS
+  is the practical default, and OSRM becomes a pure "set one env var later if
+  you want it" upgrade, not a blocker. The failure-cost lesson above carries
+  over unchanged to both backends, since the circuit breaker is
+  backend-agnostic.
+
+---
+
 ## Template for future entries
 ```
 ## P# — <short title>
