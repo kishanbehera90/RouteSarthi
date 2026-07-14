@@ -24,17 +24,24 @@ uvicorn app.main:app --reload --port 8000
 - Health: http://localhost:8000/health
 - Try: http://localhost:8000/api/routes?from=Rourkela&to=Nashik&pref=confirmed
 
-## Full engine (Step 1 — real data)
+## Full engine (real data)
 ```bash
 cp .env.example .env         # then set DATABASE_URL (team Supabase, or local Docker below)
-python etl/download.py       # fetch raw data into data/raw/ (gitignored)
-python etl/load_all.py       # load Postgres/PostGIS (~2 min)
+python etl/download.py       # fetch auto data into data/raw/; lists the manual Kaggle files
+# ...place the Kaggle datasets it lists (timetable, fares, delays)...
+python -m etl.load_v2             # timetable -> trains/stops
+python -m etl.load_fares          # real IRCTC fares -> app/data/fare_table.json
+python -m etl.load_delays         # measured delays + running-day/seasonal fixes
+python -m etl.load_schedule_extra # real per-stop distances + extra trains
+python -m etl.train_delay_model   # (optional) train the ML delay predictor
 python etl/verify.py         # sanity-check counts + core queries
 uvicorn app.main:app --reload --port 8000
 ```
-Without a `.env`, the server still boots and serves the 3 seed corridors —
-the engine gracefully falls back. First boot with a DB builds
-`data/processed/graph_cache.pkl` (~30s once, ~0.5s after).
+See "Rebuild the database from scratch" in the root [`README.md`](../README.md)
+for the full walkthrough. Without a `.env`, the server still boots and serves
+the 3 seed corridors — the engine gracefully falls back. First boot with a DB
+builds `data/processed/graph_cache.pkl` (~30s once, ~0.5s after); that file is
+committed so a fresh deploy skips the rebuild.
 
 Local infra alternative (if you have Docker):
 ```bash
