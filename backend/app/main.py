@@ -7,12 +7,13 @@ in Step 1.
 """
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.types.json import Json
 from pydantic import BaseModel, Field
 
 from . import auth
+from . import ratelimit
 from . import delay_model
 from . import seed
 from . import engine
@@ -233,7 +234,10 @@ def _token_response(user: dict):
 
 
 @app.post("/api/auth/signup")
-def signup(body: SignupRequest):
+def signup(body: SignupRequest, request: Request):
+    # Cap account creation per IP so the endpoint can't be used to mass-create
+    # accounts (each signup also triggers a bcrypt hash — CPU the pool shares).
+    ratelimit.check(f"signup:ip:{ratelimit.client_ip(request)}", limit=5, window_s=3600)
     if not _valid_email(body.email):
         raise HTTPException(400, "Enter a valid email address")
     try:
@@ -244,7 +248,14 @@ def signup(body: SignupRequest):
 
 
 @app.post("/api/auth/login")
-def login(body: LoginRequest):
+def login(body: LoginRequest, request: Request):
+    # Throttle by BOTH IP and email: the IP cap slows a single host hammering
+    # many accounts (credential stuffing); the per-email cap slows a distributed
+    # attack converging on one target account. Both are checked before the
+    # bcrypt verify, so a flood never even reaches the hash.
+    ip = ratelimit.client_ip(request)
+    ratelimit.check(f"login:ip:{ip}", limit=15, window_s=300)
+    ratelimit.check(f"login:email:{body.email.strip().lower()}", limit=8, window_s=300)
     try:
         user = auth.login(body.email, body.password)
     except ValueError as e:
@@ -258,7 +269,10 @@ def me(user: dict = Depends(auth.get_current_user)):
 
 
 @app.post("/api/auth/forgot-password")
-def forgot_password(body: ForgotPasswordRequest):
+def forgot_password(body: ForgotPasswordRequest, request: Request):
+    # Per-IP cap on top of auth.py's per-email 2-min throttle: stops one host
+    # spraying many addresses to fish out valid accounts / burn the email quota.
+    ratelimit.check(f"forgot:ip:{ratelimit.client_ip(request)}", limit=10, window_s=3600)
     # Always 200 regardless of outcome — never confirm/deny an email exists.
     if _valid_email(body.email):
         raw_token = auth.create_reset_token(body.email)

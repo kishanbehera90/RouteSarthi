@@ -25,7 +25,15 @@ PyJWT>=2.9
 # scikit-learn: delay-prediction model (load + predict at runtime; training in
 #   etl/train_delay_model.py). Histogram gradient boosting — same algorithm
 #   family as LightGBM but no native OpenMP wheel to deploy. Pulls numpy/scipy/joblib.
-scikit-learn>=1.5
+#   PINNED to the minor version the shipped delay_model.joblib was trained on:
+#   sklearn does NOT guarantee unpickle compatibility across minor versions, so a
+#   float to 1.10+ could silently break model load and drop the "predicted" tier
+#   (it degrades to the measured/modelled fallback, so no crash — just a quiet
+#   loss of the ML feature). Bump this in lockstep when you retrain the model.
+scikit-learn>=1.9,<1.10
+# joblib: used directly by app/delay_model.py to load the artifact. It's pulled
+#   transitively by scikit-learn, but pin it explicitly since we import it by name.
+joblib>=1.3
 # pandas: training-time only (etl/train_delay_model.py assembles the sample frame).
 pandas>=2.2
 # geopandas>=1.0
