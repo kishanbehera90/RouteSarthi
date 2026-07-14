@@ -58,11 +58,14 @@ Also needs in `.env` (see `.env.example`):
   intermittent, worker-dependent 401s) — so unlike `DATABASE_URL`, this fails
   loudly rather than degrading gracefully. Everything except signup/login/
   saved-trips/recent-searches still works without it.
-- `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM_EMAIL` — for password-reset
-  emails, via Brevo's free SMTP relay (300/day, no domain verification
-  needed — just a single verified sender email). Without these,
+- `BREVO_API_KEY` / `SMTP_FROM_EMAIL` — for password-reset emails, via Brevo's
+  HTTPS transactional-email API (free tier, 300/day, no domain verification
+  needed — just a single verified sender email). Deliberately the HTTPS API,
+  not raw SMTP: several hosts (Render's free tier included) block outbound
+  SMTP ports entirely, so SMTP just hangs until timeout there regardless of
+  correct credentials — see ENGINEERING_NOTES.md P23. Without these,
   forgot-password still responds 200 but only logs the reset link instead of
-  emailing it. See ENGINEERING_NOTES.md P17 for why Brevo over Resend.
+  emailing it. See P17 for why Brevo over Resend in the first place.
 
 ## Maintenance — delay-prediction model staleness
 
@@ -192,6 +195,6 @@ app/
   main.py      FastAPI app + contract + auth + personalization endpoints
   models.py    Pydantic schemas (the contract)
   auth.py      password hashing, JWT sessions, password-reset tokens
-  email.py     password-reset email (SMTP via Brevo)
+  email.py     password-reset email (Brevo HTTPS API)
   seed.py      Step-0 fixtures (ported from the frontend mock)
 ```

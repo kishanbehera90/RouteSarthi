@@ -30,16 +30,16 @@ class Settings(BaseSettings):
     # secret would cause intermittent 401s under multiple workers. auth.py
     # raises a clear error lazily if this is unset; nothing else depends on it.
     secret_key: str = ""
-    # SMTP (password-reset emails) — Brevo's free tier (300/day). Chosen over
-    # Resend's sandbox sender because Brevo only requires verifying a single
-    # SENDER EMAIL (a confirmation-link click, no DNS/domain needed) to send
-    # to any recipient; Resend's unverified-domain sandbox can only send to
-    # the account owner's own email. Empty smtp_user = forgot-password
-    # silently no-ops (logs the reset link instead of emailing it).
-    smtp_host: str = "smtp-relay.brevo.com"
-    smtp_port: int = 587
-    smtp_user: str = ""       # Brevo account login email
-    smtp_password: str = ""  # Brevo SMTP key (NOT your account password)
+    # Password-reset email via Brevo's HTTPS API (v3/smtp/email), NOT raw SMTP.
+    # Render's free tier blocks outbound traffic to SMTP ports 25/465/587
+    # entirely (as of Sep 2025) — a correctly-configured SMTP login still hangs
+    # until timeout there. The API travels over normal HTTPS (443), which is
+    # never blocked, so this is the fix, not a workaround. Brevo free tier:
+    # 300/day. Get the key at app.brevo.com -> SMTP & API -> API Keys (this is
+    # a DIFFERENT key from the SMTP login/password pair). Empty brevo_api_key
+    # or brevo_from_email = forgot-password silently no-ops (logs the reset
+    # link instead of emailing it) rather than failing the request.
+    brevo_api_key: str = ""
     smtp_from_email: str = ""  # the sender address you verified in Brevo
     # Used to build the reset-password link emailed to the user.
     frontend_url: str = "http://localhost:5173"

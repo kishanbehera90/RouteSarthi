@@ -1025,6 +1025,76 @@ Repeat searches: **~0 ms** (0.00–0.02 ms). ✅
 
 ---
 
+## P23 — Two deploy-only bugs found by actually clicking the live site
+
+Neither of these showed up in local dev or in 116 passing tests — both are
+properties of the DEPLOYED environment specifically, which is exactly why
+testing the real deployed app (not just `npm run build` succeeding) mattered.
+
+- **Bug 1 — every direct link 404'd (SPA fallback silently dropped).**
+  **Symptom:** `route-sarthi.vercel.app/login` and `/reset-password?token=...`
+  returned Vercel's static 404 instead of the React app; only the root `/`
+  worked. **Root cause:** Vercel auto-adds an SPA fallback (unmatched paths →
+  `index.html`) for a Vite project, but that auto-behavior is silently
+  disabled the moment a project ships its OWN `vercel.json` with `rewrites` —
+  ours had exactly one rule, the `/api/*` → Render proxy, with no fallback for
+  everything else. **Why this was the real "forgot password is broken" bug:**
+  the emailed reset link is `frontend_url + /reset-password?token=...` — a
+  direct navigation from the user's email client, hitting exactly the 404,
+  before React Router ever loaded. **The fix:** add a second rewrite,
+  `"/((?!api/).*)" -> "/index.html"`, ordered AFTER the `/api` rule (rewrites
+  are evaluated in order, first match wins). **Verified safe, not just
+  "probably fine":** confirmed via Vercel's own docs that rewrites are only
+  applied after a filesystem check — a request for a real built asset
+  (`/assets/index-abc.js`) is served directly and never reaches the rewrite,
+  so this couldn't have broken JS/CSS loading. Tested live post-fix:
+  `/reset-password?token=test123` now renders the actual "Choose a new
+  password" form; `/login` renders the login form. Refreshing any page (not
+  just cold-loading `/`) was silently broken by the same bug and is fixed by
+  the same change.
+- **Bug 2 — password-reset emails always "timed out" (host-level SMTP block).**
+  **Symptom:** the log showed `send_reset_email failed: timed out` on every
+  attempt, even with correct Brevo SMTP host/user/password set as Render env
+  vars. **How I ruled out a config typo first:** a wrong password or host
+  fails FAST with an auth/DNS error; a `timed out` after the full timeout
+  window is the signature of packets being silently dropped, not rejected —
+  that's a firewall, not a credentials bug. **Root cause (verified, not
+  assumed):** Render blocks ALL outbound traffic to SMTP ports 25/465/587 on
+  free web services, as of September 2025 — a platform-level policy change to
+  protect their network's spam reputation, undocumented in-app but confirmed
+  in Render's own changelog. No amount of correct SMTP configuration can work
+  around a port that's blocked before the packet leaves the box. **The fix:**
+  switched from raw `smtplib` to Brevo's HTTPS transactional-email API
+  (`POST api.brevo.com/v3/smtp/email`) — same provider, same free tier, but
+  travels over port 443, which Render never blocks. Needs a DIFFERENT
+  credential (a Brevo API key, from SMTP & API > API Keys — not the SMTP
+  login/password pair) but no new Python dependency (httpx was already used
+  elsewhere). **Why this fix (and what I rejected):** rejected upgrading to a
+  paid Render plan just to unblock port 587 — that trades money for a
+  protocol choice that has a free, equally-reliable HTTPS alternative already
+  on the same provider. Also rejected switching email providers entirely
+  (again, Resend/SendGrid/etc. all have this same SMTP-port problem on
+  Render — the port is blocked, not the provider). **Impact:** the identical
+  Brevo account, sender, and free-tier quota now work from Render; +5 unit
+  tests (not-configured no-op, sender-missing no-op, success path asserts the
+  exact endpoint/headers/payload, HTTP-error and network-error paths both
+  return False without raising) — a gap, since `email.py` had zero test
+  coverage before this bug surfaced it.
+- **Interview soundbite:** "Two bugs only existed once the app was actually
+  deployed — neither showed up in 116 local tests. The routing one taught me
+  that a custom `vercel.json` silently opts you OUT of the framework's default
+  SPA fallback, so I didn't just re-add a broad rewrite blindly — I confirmed
+  from Vercel's own docs that rewrites only apply after a filesystem check, so
+  I could be sure it wouldn't break static asset loading before shipping it.
+  The email one taught me to read a `timed out` error literally: a fast auth
+  failure means bad credentials, but a full-timeout hang after correct
+  credentials means the network path itself is blocked — which led me to
+  Render's own changelog confirming they block outbound SMTP ports on free
+  tier, and to fixing it with the same provider's HTTPS API instead of
+  guessing at credential problems that weren't there."
+
+---
+
 ## Template for future entries
 ```
 ## P# — <short title>

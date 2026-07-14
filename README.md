@@ -137,5 +137,5 @@ If you don't have the team's `DATABASE_URL`, stand up your own DB and load it:
 ## For contributors
 
 Every work session appends to `PROJECT_LOG.md`; every hard bug becomes a case
-study in `ENGINEERING_NOTES.md` (P2–P22 so far). Keep that up — it's the team's
+study in `ENGINEERING_NOTES.md` (P2–P23 so far). Keep that up — it's the team's
 shared memory and the interview record.
