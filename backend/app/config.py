@@ -7,14 +7,19 @@ class Settings(BaseSettings):
 
     database_url: str = ""
     redis_url: str = ""
-    # Real road-routing for first/last-mile legs (app/roads.py). ors_api_key
-    # (OpenRouteService, free tier, simple signup) is the default path — set
-    # osrm_url instead to switch to a self-hosted OSRM instance at any time,
-    # no code changes needed; osrm_url takes priority when both are set. Both
-    # optional — with neither set, road legs fall back to the haversine
-    # estimate that existed before real road-routing.
+    # Real road-routing for first/last-mile legs (app/roads.py), tried as a
+    # chain, each step used only if the previous is absent or its circuit
+    # breaker is open (e.g. a rate-limited backend fails over to the next):
+    #   osrm_url        self-hosted OSRM — fastest, no rate limit (primary if set)
+    #   ors_api_key     OpenRouteService hosted free tier (~2000/day, 40/min)
+    #   geoapify_api_key Geoapify hosted free tier (~3000/day) — second free
+    #                   quota so hitting one provider's limit fails over to the
+    #                   other instead of dropping to haversine
+    #   -> haversine estimate when none answer.
+    # All optional; road legs still work (haversine) with none configured.
     ors_api_key: str = ""
     osrm_url: str = ""
+    geoapify_api_key: str = ""
     # RapidAPI (IRCTC1) — free tier is ~10 calls/month, so every use must be
     # budget-guarded. Used for train-validity spot checks / lazy refresh.
     rapidapi_key: str = ""

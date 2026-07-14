@@ -6,25 +6,58 @@ def _routes(client, frm, to, **q):
     return client.get("/api/routes", params={"from": frm, "to": to, **q}).json()
 
 
-# --- real road-routing fallback: pure logic, no DB/live service needed -----
-def test_road_km_mins_uses_real_routing_when_available(monkeypatch):
+# --- road-routing during search: always haversine (zero API calls) ----------
+# Real routing is applied lazily, only to the opened route (upgrade_road_legs);
+# search itself must never hit the road API — that's the perf/rate-limit fix.
+def test_road_km_mins_never_calls_the_api_during_search(monkeypatch):
     from app import engine
-    monkeypatch.setattr(engine.roads, "route", lambda *a, **k: {"km": 5.5, "mins": 12.0})
+
+    def _boom(*a, **k):
+        raise AssertionError("search must not call roads.route()")
+
+    monkeypatch.setattr(engine.roads, "route", _boom)
     km, mins = engine._road_km_mins([77.2, 28.6], [77.1, 28.5], 999)
-    assert (km, mins) == (5.5, 12.0)
+    assert (km, mins) == (999, None)      # returns the haversine fallback, no network
 
 
-def test_road_km_mins_falls_back_when_routing_unavailable(monkeypatch):
+# --- lazy road upgrade on the opened route (pure, no DB) ---------------------
+def _road_route_fixture():
+    return {"id": "x", "roadOnly": False, "totalTimeMins": 0, "totalFareInr": 0,
+            "why": "", "legs": [
+                {"id": "1-fm", "mode": "cab", "from": "A", "to": "B", "durationMins": 30,
+                 "fareInr": 100, "fromCoords": [77.2, 28.6], "toCoords": [77.0, 28.4]},
+                {"id": "1-c1", "mode": "connection", "note": "~28 km road to B"},
+                {"id": "1-tr", "mode": "train", "durationMins": 600, "fareInr": 500}]}
+
+
+def test_upgrade_road_legs_refines_leg_note_and_totals(monkeypatch):
     from app import engine
-    monkeypatch.setattr(engine.roads, "route", lambda *a, **k: None)
-    km, mins = engine._road_km_mins([77.2, 28.6], [77.1, 28.5], 42)
-    assert km == 42 and mins is None
+    monkeypatch.setattr(engine.roads, "have_road_api", lambda: True)
+    monkeypatch.setattr(engine.roads, "route", lambda *a, **k: {"km": 12.0, "mins": 18.0})
+    r = engine.upgrade_road_legs(_road_route_fixture())
+    assert r["legs"][0]["durationMins"] == 18            # cab leg refined
+    assert r["legs"][1]["note"] == "~12 km road to B"    # connection note synced
+    assert r["totalTimeMins"] == 618                     # 18 + 600 recomputed
+    assert r["_roadsUpgraded"] is True
 
 
-def test_road_km_mins_falls_back_when_coords_missing():
+def test_upgrade_road_legs_is_idempotent(monkeypatch):
     from app import engine
-    km, mins = engine._road_km_mins(None, [77.1, 28.5], 10)
-    assert km == 10 and mins is None
+    monkeypatch.setattr(engine.roads, "have_road_api", lambda: True)
+    calls = []
+    monkeypatch.setattr(engine.roads, "route",
+                        lambda *a, **k: calls.append(1) or {"km": 12.0, "mins": 18.0})
+    r = engine.upgrade_road_legs(_road_route_fixture())
+    engine.upgrade_road_legs(r)                          # second view
+    assert len(calls) == 1                               # not re-routed
+
+
+def test_upgrade_road_legs_noop_when_roads_unconfigured(monkeypatch):
+    from app import engine
+    monkeypatch.setattr(engine.roads, "have_road_api", lambda: False)
+    r = engine.upgrade_road_legs(_road_route_fixture())
+    assert r["legs"][0]["durationMins"] == 30           # untouched haversine estimate
+    assert not r.get("_roadsUpgraded")
 
 
 def test_road_leg_uses_real_mins_when_given():

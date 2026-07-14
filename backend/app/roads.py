@@ -1,18 +1,25 @@
 """Real road-routing for road legs (first/last-mile access + the standalone
-direct-road option). Two backends, tried in priority order:
+direct-road option). A fallback CHAIN, tried in order per call; each step is
+used only if the previous is absent or its circuit breaker is open:
 
-  1. Self-hosted OSRM (`settings.osrm_url`) — no per-request limits, but needs
-     a persistent VM (Docker isn't available in this dev environment or on a
-     typical Windows machine) — see backend/README.md's OSRM setup runbook.
-     Kept as a switch-on-later option: set OSRM_URL and nothing else changes.
-  2. OpenRouteService (`settings.ors_api_key`) — a hosted API, free tier
-     (2000 req/day), signup takes minutes, no VM/Docker at all. The default
-     path today.
+  1. Self-hosted OSRM (`settings.osrm_url`) — no per-request limits, ~1-5ms
+     replies (in-RAM routing), preferred when available. Runs on a persistent
+     VM (e.g. Oracle Cloud Always Free ARM) — see backend/README.md's OSRM
+     setup runbook. Set OSRM_URL to turn it on; nothing else changes.
+  2. OpenRouteService (`settings.ors_api_key`) — hosted, free tier (~2000/day,
+     40/min).
+  3. Geoapify (`settings.geoapify_api_key`) — hosted, free tier (~3000/day). A
+     SECOND independent free quota: when ORS hits its daily/minute limit its
+     breaker opens and this call falls straight through to Geoapify (and vice
+     versa is easy to reorder), instead of dropping to the haversine estimate.
+  4. None reachable -> `route()` returns None and the caller (engine.py) falls
+     back to the haversine×1.3 estimate.
 
-Both are genuinely OPTIONAL: with neither configured, or if either is
-unreachable, `route()` returns None and callers (engine.py) fall back to the
-haversine-based estimate that existed before real road-routing. This module
-never raises.
+Each backend has its OWN circuit breaker, so one being down/limited instantly
+skips to the next (rather than one shared breaker disabling all). Note that a
+rate-limit (HTTP 429) is treated like any failure: it opens that backend's
+breaker for the cooldown, so subsequent legs in the same search skip it and use
+the next provider. This module never raises.
 """
 import time
 
@@ -22,15 +29,15 @@ from .config import settings
 
 _TIMEOUT = 1.5  # seconds — a slow/down routing service must never stall a search
 
-# Circuit breaker: a single search can have a couple dozen road legs, each a
-# separate call. Measured against a refused connection: even a "fails
-# immediately" case can take most of a timeout window on some networks (~2.9s
-# against a dead port on Windows) — without this, one search with the routing
-# service down would pay that cost once PER LEG, and every subsequent search
-# would too. One failure disables real routing for a short cooldown; it's
-# tried again after the cooldown expires (auto-recovers).
+# Per-backend circuit breaker: a single search can have a couple dozen road
+# legs, each a separate call. Measured against a refused connection, even a
+# "fails immediately" case can take most of a timeout window on some networks
+# (~2.9s against a dead port on Windows) — without this, one search with a
+# backend down would pay that cost once PER LEG, and every subsequent search
+# would too. One failure disables THAT backend for a short cooldown (so one
+# provider being down/limited doesn't also mute the others); retried after.
 _FAIL_COOLDOWN_SECONDS = 30
-_disabled_until = 0.0
+_disabled_until = {"osrm": 0.0, "ors": 0.0, "geoapify": 0.0}
 
 # A single search computes several candidate routes that often share the same
 # first/last-mile city pair (e.g. every SAMBALPUR-hub route needs the same
@@ -43,7 +50,7 @@ _route_cache = {}
 
 
 def have_road_api():
-    return bool(settings.osrm_url or settings.ors_api_key)
+    return bool(settings.osrm_url or settings.ors_api_key or settings.geoapify_api_key)
 
 
 def _osrm_route(lat1, lng1, lat2, lng2):
@@ -74,24 +81,59 @@ def _ors_route(lat1, lng1, lat2, lng2):
     return {"km": summary["distance"] / 1000, "mins": summary["duration"] / 60}
 
 
+def _geoapify_route(lat1, lng1, lat2, lng2):
+    url = "https://api.geoapify.com/v1/routing"
+    r = httpx.get(
+        url,
+        params={"waypoints": f"{lat1},{lng1}|{lat2},{lng2}", "mode": "drive",
+                "apiKey": settings.geoapify_api_key},
+        timeout=_TIMEOUT,
+    )
+    r.raise_for_status()
+    data = r.json()
+    features = data.get("features") or []
+    if not features:
+        return None
+    props = features[0].get("properties") or {}
+    dist, secs = props.get("distance"), props.get("time")   # metres, seconds
+    if dist is None or secs is None:
+        return None
+    return {"km": dist / 1000, "mins": secs / 60}
+
+
+def _try(name, fn, lat1, lng1, lat2, lng2):
+    """Call one backend behind its own circuit breaker. Returns a result dict,
+    or None if the backend is in cooldown, errors, or finds no route. A raised
+    error opens THIS backend's breaker for the cooldown window (so the chain
+    can still fall through to the next backend on this very call)."""
+    if time.monotonic() < _disabled_until[name]:
+        return None
+    try:
+        return fn(lat1, lng1, lat2, lng2)
+    except Exception as e:  # noqa: BLE001 — a routing hiccup must never break a search
+        print(f"road routing via {name} failed (trying next fallback):", e)
+        _disabled_until[name] = time.monotonic() + _FAIL_COOLDOWN_SECONDS
+        return None
+
+
 def route(lat1, lng1, lat2, lng2):
-    """Real road (km, mins) between two points, or None on ANY failure
-    (nothing configured, timeout, connection error, malformed/unrouteable
-    response, or still inside the post-failure cooldown)."""
-    global _disabled_until
-    if not settings.osrm_url and not settings.ors_api_key:
+    """Real road (km, mins) between two points via OSRM -> ORS -> Geoapify, or
+    None if nothing is configured / all are unreachable / no route exists
+    (caller then uses the haversine estimate). Never raises."""
+    if not have_road_api():
         return None
     key = (round(lat1, 4), round(lng1, 4), round(lat2, 4), round(lng2, 4))
     if key in _route_cache:
         return _route_cache[key]
-    if time.monotonic() < _disabled_until:
-        return None
-    try:
-        result = _osrm_route(lat1, lng1, lat2, lng2) if settings.osrm_url else _ors_route(lat1, lng1, lat2, lng2)
-    except Exception as e:  # noqa: BLE001 — a routing-service hiccup must never break a search
-        print("road routing failed (falling back to haversine):", e)
-        _disabled_until = time.monotonic() + _FAIL_COOLDOWN_SECONDS
-        return None
+
+    result = None
+    if settings.osrm_url:
+        result = _try("osrm", _osrm_route, lat1, lng1, lat2, lng2)
+    if result is None and settings.ors_api_key:
+        result = _try("ors", _ors_route, lat1, lng1, lat2, lng2)
+    if result is None and settings.geoapify_api_key:
+        result = _try("geoapify", _geoapify_route, lat1, lng1, lat2, lng2)
+
     if result is not None:
         _route_cache[key] = result
     return result
