@@ -5,12 +5,32 @@ contract end-to-end with a real server. Endpoints mirror
 frontend/API_CONTRACT.md exactly. Real data + the cross-origin engine arrive
 in Step 1.
 """
+import json
+import logging
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from psycopg.types.json import Json
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+logger = logging.getLogger("routesarthi")
+
+# Query-param constraints reused across search endpoints. A place name is a
+# short string; pref is a closed set; date is empty or ISO YYYY-MM-DD. FastAPI
+# rejects anything outside these with a 422 before our code runs.
+_PLACE_MAX = 120
+_DATE_PATTERN = r"^(\d{4}-\d{2}-\d{2})?$"
+Pref = Literal["confirmed", "cheapest", "fastest"]
+
+
+class StrictModel(BaseModel):
+    """Base for all request bodies: reject unknown fields outright (extra data
+    is a red flag, not something to silently ignore) and strip surrounding
+    whitespace on strings."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 from . import auth
 from . import ratelimit
@@ -64,6 +84,31 @@ app.add_middleware(
 )
 
 
+# Rate-limit tiers (requests / window, per client IP). Tiered by endpoint type:
+# STRICT on auth (brute-force / credential-stuffing — see the inline limits on
+# the auth routes), MODERATE on public compute/DB endpoints, LOOSE on
+# authenticated per-user actions. /health is intentionally UNLIMITED so the
+# uptime keep-alive pinger never trips it.
+RL_PUBLIC = ("public", 60, 60)          # 60/min  — cheap public reads
+RL_SEARCH = ("search", 30, 60)          # 30/min  — the expensive engine search
+RL_AUTOCOMPLETE = ("places", 120, 60)   # 120/min — /api/places fires per keystroke
+RL_AUTHED = ("authed", 100, 60)         # 100/min — logged-in user actions
+RL_RESET = ("reset", 10, 3600)          # 10/hr   — password-reset token redemption
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    """Last line of defence: any exception NOT already turned into an
+    HTTPException (a raw DB error, a bug, a None deref) reaches here. Log the
+    FULL error with traceback server-side for debugging, but return a GENERIC
+    message to the client — never a stack trace, file path, SQL, or driver
+    error. (FastAPI still handles HTTPException / 422 validation itself with
+    their own safe, intentional messages; this only catches the unintended.)"""
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500,
+                        content={"detail": "Something went wrong on our end. Please try again."})
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "phase": "B", "step": 1, "graph": graph.stats(),
@@ -72,7 +117,7 @@ def health():
                            "stale": delay_model.is_stale()}}
 
 
-@app.get("/api/delay-model-info")
+@app.get("/api/delay-model-info", dependencies=[Depends(ratelimit.limiter(*RL_PUBLIC))])
 def delay_model_info():
     """Static metadata about the delay-prediction model — surfaced in the
     frontend's 'Predicted' tooltip so users can see what the number is
@@ -80,12 +125,12 @@ def delay_model_info():
     return delay_model.info() or {"loaded": False}
 
 
-@app.get("/api/corridors")
+@app.get("/api/corridors", dependencies=[Depends(ratelimit.limiter(*RL_PUBLIC))])
 def list_corridors():
     return seed.CORRIDORS
 
 
-@app.get("/api/corridors/{corridor_id}")
+@app.get("/api/corridors/{corridor_id}", dependencies=[Depends(ratelimit.limiter(*RL_PUBLIC))])
 def get_corridor(corridor_id: str, response: Response):
     corridor = seed.get_corridor(corridor_id)
     if not corridor:
@@ -94,12 +139,12 @@ def get_corridor(corridor_id: str, response: Response):
     return {"corridor": corridor, "routes": seed.get_routes(corridor_id)}
 
 
-@app.get("/api/routes")
+@app.get("/api/routes", dependencies=[Depends(ratelimit.limiter(*RL_SEARCH))])
 def search_routes(
-    from_: str = Query("", alias="from"),
-    to: str = "",
-    pref: str = "confirmed",
-    date: str = "",
+    from_: str = Query("", alias="from", max_length=_PLACE_MAX),
+    to: str = Query("", max_length=_PLACE_MAX),
+    pref: Pref = "confirmed",
+    date: str = Query("", pattern=_DATE_PATTERN),
 ):
     # Live engine over real data. Falls back to seed if the engine can't
     # geocode the place OR can't run at all (no .env / DB unreachable / no
@@ -117,7 +162,7 @@ def search_routes(
     return result
 
 
-@app.get("/api/routes/{route_id}")
+@app.get("/api/routes/{route_id}", dependencies=[Depends(ratelimit.limiter(*RL_PUBLIC))])
 def get_route(route_id: str, response: Response):
     route = engine.get_stored_route(route_id) or seed.find_route(route_id)
     if not route:
@@ -126,8 +171,8 @@ def get_route(route_id: str, response: Response):
     return route
 
 
-@app.get("/api/places")
-def suggest_places(q: str = ""):
+@app.get("/api/places", dependencies=[Depends(ratelimit.limiter(*RL_AUTOCOMPLETE))])
+def suggest_places(q: str = Query("", max_length=80)):
     """Autocomplete: top places matching a prefix, WITH their state — so users
     pick 'Gorakhpur, Uttar Pradesh' and never hit spelling/ambiguity issues."""
     q = q.strip().lower()
@@ -187,12 +232,12 @@ def suggest_places(q: str = ""):
 
 # Unified: /api/search is now an alias of /api/routes (same engine + seed
 # fallback). Kept for compatibility with earlier scripts/benchmarks.
-@app.get("/api/search")
+@app.get("/api/search", dependencies=[Depends(ratelimit.limiter(*RL_SEARCH))])
 def search_engine(
-    from_: str = Query("", alias="from"),
-    to: str = "",
-    pref: str = "confirmed",
-    date: str = "",
+    from_: str = Query("", alias="from", max_length=_PLACE_MAX),
+    to: str = Query("", max_length=_PLACE_MAX),
+    pref: Pref = "confirmed",
+    date: str = Query("", pattern=_DATE_PATTERN),
 ):
     return search_routes(from_, to, pref, date)
 
@@ -209,23 +254,23 @@ def _valid_email(email: str) -> bool:
     return bool(local) and "." in domain and not domain.startswith(".")
 
 
-class SignupRequest(BaseModel):
-    email: str
+class SignupRequest(StrictModel):
+    email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=8, max_length=72)
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=80)
 
 
-class LoginRequest(BaseModel):
-    email: str
-    password: str = Field(max_length=72)
+class LoginRequest(StrictModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=72)
 
 
-class ForgotPasswordRequest(BaseModel):
-    email: str
+class ForgotPasswordRequest(StrictModel):
+    email: str = Field(min_length=3, max_length=254)
 
 
-class ResetPasswordRequest(BaseModel):
-    token: str
+class ResetPasswordRequest(StrictModel):
+    token: str = Field(min_length=16, max_length=256)
     new_password: str = Field(min_length=8, max_length=72)
 
 
@@ -284,7 +329,11 @@ def forgot_password(body: ForgotPasswordRequest, request: Request):
 
 
 @app.post("/api/auth/reset-password")
-def reset_password(body: ResetPasswordRequest):
+def reset_password(body: ResetPasswordRequest, request: Request):
+    # Strict: the token is a 32-byte secret, but cap redemption attempts per IP
+    # anyway so the endpoint can't be hammered to brute-force tokens or as a
+    # password-change oracle.
+    ratelimit.check(f"reset:ip:{ratelimit.client_ip(request)}", limit=10, window_s=3600)
     try:
         auth.redeem_reset_token(body.token, body.new_password)
     except ValueError as e:
@@ -295,11 +344,25 @@ def reset_password(body: ResetPasswordRequest):
 # --- Saved trips (per-user) ----------------------------------------------
 
 
-class SaveTripRequest(BaseModel):
+class SaveTripRequest(StrictModel):
     route: dict
 
+    @field_validator("route")
+    @classmethod
+    def _route_is_sane(cls, v: dict) -> dict:
+        # A route is engine-generated, but this endpoint takes it back from the
+        # client, so treat it as untrusted: require a string id, and cap the
+        # serialized size so a caller can't stuff arbitrarily large JSON into
+        # the DB (a cheap storage-DoS vector).
+        rid = v.get("id")
+        if not rid or not isinstance(rid, str) or len(rid) > 200:
+            raise ValueError("route.id is required and must be a short string")
+        if len(json.dumps(v)) > 64_000:
+            raise ValueError("route payload is too large")
+        return v
 
-@app.get("/api/saved-trips")
+
+@app.get("/api/saved-trips", dependencies=[Depends(ratelimit.limiter(*RL_AUTHED))])
 def list_saved_trips(user: dict = Depends(auth.get_current_user)):
     with get_pool().connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -311,7 +374,7 @@ def list_saved_trips(user: dict = Depends(auth.get_current_user)):
     return {"trips": [{"routeId": r[0], "route": r[1], "savedAt": r[2].isoformat()} for r in rows]}
 
 
-@app.post("/api/saved-trips")
+@app.post("/api/saved-trips", dependencies=[Depends(ratelimit.limiter(*RL_AUTHED))])
 def save_trip(body: SaveTripRequest, user: dict = Depends(auth.get_current_user)):
     route_id = body.route.get("id")
     if not route_id or not isinstance(route_id, str):
@@ -328,7 +391,7 @@ def save_trip(body: SaveTripRequest, user: dict = Depends(auth.get_current_user)
     return {"ok": True}
 
 
-@app.delete("/api/saved-trips/{route_id}")
+@app.delete("/api/saved-trips/{route_id}", dependencies=[Depends(ratelimit.limiter(*RL_AUTHED))])
 def delete_saved_trip(route_id: str, user: dict = Depends(auth.get_current_user)):
     with get_pool().connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -344,14 +407,14 @@ def delete_saved_trip(route_id: str, user: dict = Depends(auth.get_current_user)
 RECENT_SEARCHES_LIMIT = 8
 
 
-class RecentSearchRequest(BaseModel):
-    from_: str = Field(alias="from")
-    to: str
-    date: str = ""
-    pref: str = "confirmed"
+class RecentSearchRequest(StrictModel):
+    from_: str = Field(alias="from", min_length=1, max_length=_PLACE_MAX)
+    to: str = Field(min_length=1, max_length=_PLACE_MAX)
+    date: str = Field(default="", pattern=_DATE_PATTERN)
+    pref: Pref = "confirmed"
 
 
-@app.get("/api/recent-searches")
+@app.get("/api/recent-searches", dependencies=[Depends(ratelimit.limiter(*RL_AUTHED))])
 def list_recent_searches(user: dict = Depends(auth.get_current_user)):
     with get_pool().connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -367,7 +430,7 @@ def list_recent_searches(user: dict = Depends(auth.get_current_user)):
     ]}
 
 
-@app.post("/api/recent-searches")
+@app.post("/api/recent-searches", dependencies=[Depends(ratelimit.limiter(*RL_AUTHED))])
 def record_search(body: RecentSearchRequest, user: dict = Depends(auth.get_current_user)):
     from_place, to_place = body.from_.strip(), body.to.strip()
     if not from_place or not to_place:

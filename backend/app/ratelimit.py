@@ -66,6 +66,19 @@ def check(key: str, limit: int, window_s: int) -> None:
             )
 
 
+def limiter(bucket: str, limit: int, window_s: int):
+    """Build a FastAPI dependency that rate-limits `bucket` by client IP.
+
+    Use on a route via the decorator's `dependencies=` so it doesn't touch the
+    handler signature, e.g.:
+        @app.get("/api/routes", dependencies=[Depends(ratelimit.limiter("search", 30, 60))])
+    Tier the numbers by endpoint type — strict on auth, moderate on public,
+    loose on authenticated user actions (see main.py's RL_* constants)."""
+    def _dep(request: Request) -> None:
+        check(f"{bucket}:ip:{client_ip(request)}", limit, window_s)
+    return _dep
+
+
 def reset() -> None:
     """Clear all counters — for tests only."""
     with _lock:
