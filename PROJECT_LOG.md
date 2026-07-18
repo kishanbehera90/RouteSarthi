@@ -269,6 +269,46 @@ must be set to `frontend/`.)
 ---
 
 ## Changelog
+- **2026-07-15 (first deploy: Render + Vercel, and two deploy-only bugs)** —
+  backend live on Render (free tier; graph cache committed so cold starts skip
+  the ~30s rebuild; UptimeRobot pings `/health` every 5min to prevent the
+  15min free-tier sleep), frontend live on Vercel (`vercel.json` rewrites
+  `/api/*` to Render — same-origin, no CORS). Two bugs only visible once
+  actually deployed (neither showed up in 116 local tests) — full writeup in
+  ENGINEERING_NOTES P23:
+  1. **SPA routing broken.** A custom `vercel.json` silently disables Vercel's
+     default SPA fallback, so every direct link (including the emailed
+     password-reset link) hit a static 404 before React Router loaded. Fixed
+     with a second rewrite (`/((?!api/).*) -> /index.html`), confirmed safe
+     against static assets via Vercel's filesystem-first rewrite behavior.
+  2. **Password-reset emails always "timed out."** Render blocks ALL outbound
+     SMTP ports (25/465/587) on its free tier (Sep 2025 policy) — no amount of
+     correct Brevo SMTP config can get past a blocked port. Switched
+     `app/email.py` from raw `smtplib` to Brevo's HTTPS transactional-email
+     API (same provider/tier, travels over 443, which is never blocked).
+     `BREVO_API_KEY` replaces `SMTP_HOST/PORT/USER/PASSWORD` in config/env.
+  +5 tests (email.py had zero coverage before) -> 116 pass.
+- **2026-07-14 (pre-deploy security hardening pass)** — five-part sweep before
+  going live:
+  1. **Tiered rate limiting** (`app/ratelimit.py` `limiter()` dependency): STRICT
+     on auth (login 15/IP + 8/email per 5min checked *before* bcrypt, signup
+     5/IP/hr, forgot/reset 10/IP/hr), MODERATE on public (search 30/min,
+     reads 60/min, autocomplete 120/min), LOOSE on authed actions (100/min).
+     `/health` stays unlimited so the uptime pinger never trips it.
+  2. **Strict input validation:** a `StrictModel` base with `extra="forbid"`
+     (unknown fields rejected, not ignored) + bounded lengths on every body;
+     query params typed (`pref` is a `Literal`, `date` a regex, place names
+     capped); `SaveTripRequest.route` size-capped (storage-DoS guard).
+  3. **Secret scan:** no hardcoded keys/passwords in source or any tracked file;
+     `.env`/`.env.local` gitignored and never committed in history. Only client
+     var shipped is `VITE_MAPPLS_KEY` (a map SDK key — public by design;
+     domain-restrict it in the Mappls console).
+  4. **Dependency audit:** `npm audit` 0 vulns; `pip-audit` clean after bumping
+     `pip` (the one flagged package — a tool, not a runtime dep) to 26.1.2.
+  5. **Error handling:** a global exception handler logs full tracebacks
+     server-side but returns a generic message — clients never see stack traces,
+     file paths, or raw DB errors. Curated messages on all intentional 4xx.
+  +9 tests (validation, rate-limit wiring, generic-500) -> 111 pass.
 - **2026-07-13 (OSRM real road-routing wired in, plus CI)** — `osrm_url` had
   been a config field since Phase B, read by zero runtime code; all road-leg
   numbers (first/last-mile access + the standalone direct-road option) were

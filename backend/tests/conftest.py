@@ -19,6 +19,17 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _reset_ratelimit():
+    # TestClient sends every request from the same host ("testclient"), so all
+    # auth tests would otherwise share one IP counter and trip the limiter.
+    # Reset before each test for isolation (the limiter itself is tested
+    # directly in test_ratelimit.py).
+    from app import ratelimit
+    ratelimit.reset()
+    yield
+
+
 @pytest.fixture(scope="session")
 def engine_ready(client):
     try:

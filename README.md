@@ -121,7 +121,6 @@ If you don't have the team's `DATABASE_URL`, stand up your own DB and load it:
      trains the delay-prediction model → `app/data/delay_model.joblib`. Optional:
      without it, delay falls back to the flat measured average (no "predicted"
      tier). Requires the `train_delays` table (from `load_delays`) to exist first.
-   Do **not** run the deprecated `load_all.py` — it breaks the current schema.
 5. **Verify:** `python etl/verify.py` (row counts + core queries) and
    `python etl/benchmark.py` (duration sanity vs real trains).
 6. **Run:** `uvicorn app.main:app --port 8000`. The first boot builds
@@ -138,5 +137,5 @@ If you don't have the team's `DATABASE_URL`, stand up your own DB and load it:
 ## For contributors
 
 Every work session appends to `PROJECT_LOG.md`; every hard bug becomes a case
-study in `ENGINEERING_NOTES.md` (P2–P19 so far). Keep that up — it's the team's
+study in `ENGINEERING_NOTES.md` (P2–P23 so far). Keep that up — it's the team's
 shared memory and the interview record.

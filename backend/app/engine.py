@@ -10,6 +10,8 @@ NOT yet modelled (later steps, no data yet): live delays (Step 3) and seat /
 waitlist confirmation (Step 4). `reliability` here is a transparent *connectivity*
 heuristic (network resilience + directness), clearly a placeholder until then.
 """
+import re
+
 from . import graph
 from . import metrics
 from . import roads
@@ -43,7 +45,52 @@ def get_stored_route(route_id):
         r = _rebuild_direct(route_id)  # stateless fallback (restart/worker-safe)
         if r:
             ROUTE_STORE[route_id] = r
-    return r
+    return upgrade_road_legs(r)
+
+
+def upgrade_road_legs(route):
+    """Refine a route's road legs (first/last-mile access + the road-only
+    option) with REAL routed distance/duration (OSRM->ORS), lazily — only for
+    the ONE route the user opens on the detail page. search() itself uses just
+    the haversine estimate, so a full search makes ZERO road-API calls; this is
+    what keeps search fast and within ORS's free-tier rate limit. Idempotent
+    (marks the route `_roadsUpgraded`) and a graceful no-op when roads aren't
+    configured, a leg has no coords, or the service is unreachable — the
+    haversine numbers simply stand. Mutates and returns the route."""
+    if not route or route.get("_roadsUpgraded") or not roads.have_road_api():
+        return route
+    legs = route.get("legs", [])
+    last_r = None
+    for i, leg in enumerate(legs):
+        if leg.get("mode") != "cab":
+            continue
+        fc, tc = leg.get("fromCoords"), leg.get("toCoords")
+        if not fc or not tc:
+            continue
+        r = roads.route(fc[1], fc[0], tc[1], tc[0])   # [lng,lat] stored; roads wants lat,lng
+        if not r:
+            continue
+        last_r = r
+        leg["durationMins"] = round(r["mins"])
+        leg["fareInr"] = _fare_road(r["km"])
+        # keep the adjacent "~N km road to X" connection note in sync with the
+        # refined distance (first-mile: note follows the leg; last-mile: precedes)
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(legs) and legs[j].get("mode") == "connection":
+                note = legs[j].get("note") or ""
+                if "km road to" in note:
+                    legs[j]["note"] = re.sub(r"~\d+ km", f"~{round(r['km'])} km", note)
+    if last_r is not None:
+        route["totalTimeMins"] = sum(l.get("durationMins", 0) for l in legs)
+        route["totalFareInr"] = sum(l.get("fareInr", 0) for l in legs)
+        # the road-only option bakes km + time into its `why` string
+        if route.get("roadOnly"):
+            dur = route["totalTimeMins"]
+            route["why"] = re.sub(r"~\d+ km, ~\d+h \d+m",
+                                  f"~{round(last_r['km'])} km, ~{dur // 60}h {dur % 60:02d}m",
+                                  route.get("why", ""))
+    route["_roadsUpgraded"] = True
+    return route
 
 
 def _rebuild_direct(route_id):
@@ -290,15 +337,15 @@ def _delay_ctx(tn, acode, ctx):
 
 
 def _road_km_mins(fromc, toc, fallback_km):
-    """Real road (km, mins) from OpenRouteService or self-hosted OSRM (see
-    app/roads.py) when available; else the caller's haversine-based
-    `fallback_km` with mins=None (letting `_road_leg` derive duration from
-    ROAD_KMPH, same as before real road-routing existed). `fromc`/`toc` are
-    [lng, lat] pairs, already computed by every caller for map display."""
-    if fromc and toc:
-        r = roads.route(fromc[1], fromc[0], toc[1], toc[0])
-        if r:
-            return r["km"], r["mins"]
+    """Haversine-based (km, mins=None) road estimate used during SEARCH.
+
+    Real road distances (OSRM->ORS) are applied LAZILY — only to the single
+    route the user actually opens (see upgrade_road_legs), not to every
+    candidate. A search therefore makes ZERO road-API calls, which is what
+    keeps it fast and inside ORS's free-tier limits (a search can have a
+    couple dozen road legs; routing them all up front was the slow part).
+    `fromc`/`toc` stay in the signature — callers still pass them for the
+    leg's map coords — but the estimate no longer needs a network call."""
     return fallback_km, None
 
 

@@ -9,4 +9,11 @@ env/
 .ruff_cache/
 data/raw/
 data/processed/
+# ...but DO commit the prebuilt graph cache: it lets a fresh deploy (Render etc.)
+# skip the ~30s rebuild-from-DB on cold start. Regenerate + recommit after any
+# DB reload / ETL run (delete it and boot once, or it rebuilds if the version
+# tag mismatches). Loads cross-platform (plain data); falls back to a DB rebuild
+# if it can't be read, so a stale/incompatible file is never fatal.
+!data/processed/
+!data/processed/graph_cache.pkl
 *.db

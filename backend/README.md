@@ -24,17 +24,24 @@ uvicorn app.main:app --reload --port 8000
 - Health: http://localhost:8000/health
 - Try: http://localhost:8000/api/routes?from=Rourkela&to=Nashik&pref=confirmed
 
-## Full engine (Step 1 — real data)
+## Full engine (real data)
 ```bash
 cp .env.example .env         # then set DATABASE_URL (team Supabase, or local Docker below)
-python etl/download.py       # fetch raw data into data/raw/ (gitignored)
-python etl/load_all.py       # load Postgres/PostGIS (~2 min)
+python etl/download.py       # fetch auto data into data/raw/; lists the manual Kaggle files
+# ...place the Kaggle datasets it lists (timetable, fares, delays)...
+python -m etl.load_v2             # timetable -> trains/stops
+python -m etl.load_fares          # real IRCTC fares -> app/data/fare_table.json
+python -m etl.load_delays         # measured delays + running-day/seasonal fixes
+python -m etl.load_schedule_extra # real per-stop distances + extra trains
+python -m etl.train_delay_model   # (optional) train the ML delay predictor
 python etl/verify.py         # sanity-check counts + core queries
 uvicorn app.main:app --reload --port 8000
 ```
-Without a `.env`, the server still boots and serves the 3 seed corridors —
-the engine gracefully falls back. First boot with a DB builds
-`data/processed/graph_cache.pkl` (~30s once, ~0.5s after).
+See "Rebuild the database from scratch" in the root [`README.md`](../README.md)
+for the full walkthrough. Without a `.env`, the server still boots and serves
+the 3 seed corridors — the engine gracefully falls back. First boot with a DB
+builds `data/processed/graph_cache.pkl` (~30s once, ~0.5s after); that file is
+committed so a fresh deploy skips the rebuild.
 
 Local infra alternative (if you have Docker):
 ```bash
@@ -51,11 +58,14 @@ Also needs in `.env` (see `.env.example`):
   intermittent, worker-dependent 401s) — so unlike `DATABASE_URL`, this fails
   loudly rather than degrading gracefully. Everything except signup/login/
   saved-trips/recent-searches still works without it.
-- `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM_EMAIL` — for password-reset
-  emails, via Brevo's free SMTP relay (300/day, no domain verification
-  needed — just a single verified sender email). Without these,
+- `BREVO_API_KEY` / `SMTP_FROM_EMAIL` — for password-reset emails, via Brevo's
+  HTTPS transactional-email API (free tier, 300/day, no domain verification
+  needed — just a single verified sender email). Deliberately the HTTPS API,
+  not raw SMTP: several hosts (Render's free tier included) block outbound
+  SMTP ports entirely, so SMTP just hangs until timeout there regardless of
+  correct credentials — see ENGINEERING_NOTES.md P23. Without these,
   forgot-password still responds 200 but only logs the reset link instead of
-  emailing it. See ENGINEERING_NOTES.md P17 for why Brevo over Resend.
+  emailing it. See P17 for why Brevo over Resend in the first place.
 
 ## Maintenance — delay-prediction model staleness
 
@@ -104,33 +114,47 @@ requests/day), no Docker, no VM, no card. Takes about 5 minutes:
 That's it — no further setup. **Add your key directly to `.env` yourself**;
 don't paste it into chat or commit it.
 
-### Optional, for later: self-hosted OSRM
+### Self-hosted OSRM (primary road backend, ORS stays as the fallback)
 
-If you ever want to remove ORS's rate limits, `app/roads.py` also supports a
-self-hosted OSRM instance — **just set `OSRM_URL`**, no code changes, and it
-takes priority over `ORS_API_KEY` automatically. Skip this section entirely
-unless/until you want it.
+`app/roads.py` tries backends as a chain: **OSRM (`OSRM_URL`) → ORS
+(`ORS_API_KEY`) → haversine.** Setting `OSRM_URL` promotes a self-hosted OSRM
+to primary (fast, no rate limit); ORS is automatically kept as a live safety
+net for whenever OSRM's circuit breaker is open. Each backend has its own
+breaker, so OSRM being down instantly falls through to ORS on the same call.
 
-OSRM needs a real India-wide routing graph in memory, which needs Docker —
-unavailable on a typical Windows dev machine, so it runs on **one small
-persistent VM**, shared by local dev and production (`OSRM_URL` set the same
-way in both — same pattern already used for Supabase Postgres). Once you have
-a VM (a small Ubuntu box on any provider — Oracle Cloud's Always-Free ARM
-tier is genuinely free and has plenty of RAM; a small
-DigitalOcean/Linode/Vultr droplet, ~$6-12/mo for 2-4GB RAM, is the
-simpler-signup paid alternative):
+OSRM needs an India-wide routing graph in RAM (needs Docker — unavailable on a
+typical Windows dev machine), so it runs on **one small persistent VM**, shared
+by local dev and production (`OSRM_URL` set the same way in both — same pattern
+as Supabase Postgres).
+
+**Recommended host — Oracle Cloud Always Free ARM (Ampere A1).** As of
+2026-06-15 the free allowance is **2 OCPU / 12 GB RAM** (halved from 4/24;
+still ample — the India extract build peaks around ~7 GB). 200 GB free block
+storage covers the ~10 GB of graph files easily.
+- **Region:** pick **Mumbai (ap-mumbai-1)** or **Singapore (ap-singapore-1)** —
+  closest to Indian users (lowest routing latency) AND the ARM tier provisions
+  fastest there. Busy regions (US East) often return **"Out of host capacity"**
+  for ARM; if so, try a different fault domain or one of the above regions.
+- Create a **VM.Standard.A1.Flex** instance, Ubuntu 22.04, 2 OCPU / 12 GB.
+- A paid DigitalOcean/Hetzner/Vultr box (~$6-12/mo, ≥4 GB RAM) is the
+  simpler-signup alternative if Oracle capacity is unavailable.
 
 ```bash
 # 1. Install Docker on the VM
-curl -fsSL https://get.docker.com | sh
+curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER   # re-login after
 
-# 2. Download the India OSM extract (standard OSM community source, ~1-1.5 GB)
+# 1b. Safety-margin swap (cheap insurance so the ~7 GB extract can't OOM on 12 GB)
+sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+# 2. Download the India OSM extract (Geofabrik, ~1.3 GB)
 mkdir -p ~/osrm-data && cd ~/osrm-data
 wget https://download.geofabrik.de/asia/india-latest.osm.pbf
 
-# 3. Build the routing graph (MLD algorithm — memory-efficient for a
-#    country-sized region; matches backend/docker-compose.yml's osrm service).
-#    This is CPU-heavy — expect 15-60+ minutes depending on VM specs.
+# 3. Build the routing graph (MLD — memory-efficient for a country-sized
+#    region). CPU-heavy: ~20-60 min on 2 OCPU. osrm/osrm-backend is multi-arch,
+#    so the same commands work on ARM (Oracle) and x86.
 docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-extract -p /opt/car.lua /data/india-latest.osm.pbf
 docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-partition /data/india-latest.osrm
 docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-customize /data/india-latest.osrm
@@ -139,23 +163,31 @@ docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-customize /data/india-lat
 docker run -d --name osrm --restart unless-stopped -p 5000:5000 \
   -v "${PWD}:/data" osrm/osrm-backend osrm-routed --algorithm mld /data/india-latest.osrm
 
-# 5. Verify directly (independent of this app)
-curl "http://localhost:5000/route/v1/driving/77.209,28.6139;77.0266,28.4595"
+# 5. Verify locally on the VM (independent of this app)
+curl "http://localhost:5000/route/v1/driving/77.209,28.6139;77.0266,28.4595?overview=false"
 ```
 
-No architecture-specific steps needed for an ARM VM (e.g. Oracle's) —
-`osrm/osrm-backend` publishes multi-arch images. **Firewall note:** OSRM has
-no built-in auth — restrict port 5000 at the VM's firewall to known caller
-IPs where the provider allows it, rather than leaving it open to the world.
+**⚠️ Oracle networking has TWO firewalls — both block port 5000 by default,
+and this is the #1 reason "curl works on the VM but my backend can't reach
+it":**
+1. **Cloud security list / NSG** (in the OCI console): VCN → your subnet →
+   Security List → add an **Ingress rule** for TCP **5000** from your
+   backend's source (ideally the deploy host's IP, not `0.0.0.0/0`).
+2. **Host firewall** (Oracle's Ubuntu images ship locked-down iptables):
+   `sudo iptables -I INPUT -p tcp --dport 5000 -j ACCEPT` then persist it
+   (`sudo netfilter-persistent save`, installing `iptables-persistent` if
+   needed). OSRM has no built-in auth, so prefer restricting the source over
+   opening it to the world.
 
-Then set `OSRM_URL=http://<vm-ip>:5000` in `backend/.env` (dev) and, later,
-as a Render env var (prod) — no other code changes needed; `app/roads.py`
-only cares about the URL. Test end-to-end: search a corridor with a road leg
-and confirm its duration/fare changed from the ORS/haversine numbers.
+Then set `OSRM_URL=http://<vm-public-ip>:5000` in `backend/.env` (dev) and as
+a prod env var — no code changes; keep `ORS_API_KEY` set too so the fallback
+survives an OSRM outage. Test end-to-end: search a corridor with a road leg
+and confirm its duration/fare changed from the ORS/haversine numbers, and that
+`/health`-style checks still pass if OSRM is stopped (falls through to ORS).
 
-If `docker-compose` happens to be available on the VM too, `backend/docker-compose.yml`'s
-`osrm` service is an equivalent, already-defined alternative to steps 1-4
-above (`docker compose up -d osrm` once the extract is downloaded and built).
+If `docker-compose` is available on the VM, `backend/docker-compose.yml`'s
+`osrm` service is an equivalent, already-defined alternative to steps 3-4
+(`docker compose up -d osrm` once the extract is downloaded).
 
 ## Layout
 ```
@@ -163,6 +195,6 @@ app/
   main.py      FastAPI app + contract + auth + personalization endpoints
   models.py    Pydantic schemas (the contract)
   auth.py      password hashing, JWT sessions, password-reset tokens
-  email.py     password-reset email (SMTP via Brevo)
+  email.py     password-reset email (Brevo HTTPS API)
   seed.py      Step-0 fixtures (ported from the frontend mock)
 ```
